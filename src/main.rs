@@ -1,25 +1,39 @@
 #![deny(rust_2018_idioms, unused, unused_import_braces, unused_qualifications, warnings)]
 
-use ggez::{
-    Context,
-    ContextBuilder,
-    GameResult,
-    conf::{
-        FullscreenType,
-        WindowMode
+use {
+    std::{
+        env,
+        time::Duration
     },
-    event::EventHandler,
-    graphics::{
-        self,
-        BLACK,
-        Color,
-        //Font,
-        Rect,
-        WHITE
+    chrono::prelude::*,
+    ggez::{
+        Context,
+        ContextBuilder,
+        GameResult,
+        conf::{
+            FullscreenType,
+            WindowMode
+        },
+        event::EventHandler,
+        graphics::{
+            self,
+            BLACK,
+            Color,
+            //Font,
+            Rect,
+            WHITE
+        },
+        input::mouse,
+        timer
     },
-    input::mouse,
-    timer
+    crate::{
+        config::Config,
+        event::Event
+    }
 };
+
+mod config;
+mod event;
 
 struct Handler {
     bg: Color,
@@ -59,13 +73,28 @@ impl EventHandler for Handler {
     }
 }
 
-fn main() -> GameResult {
+#[tokio::main]
+async fn main() {
+    let config = Config::new().expect("failed to read config");
+    let client = reqwest::Client::builder()
+        .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(600))
+        .build().expect("failed to build HTTP client");
+    if env::args().skip(1).any(|arg| arg == "--conditional") {
+        let current_event = match Event::current(&config, &client).await.expect("failed to get current event") {
+            Some(event) => event,
+            None => return
+        };
+        if current_event.start().single().map_or(false, |start| Utc::now() < start) || current_event.end().single().map_or(false, |end| end <= Utc::now()) {
+            return
+        }
+    }
     let (mut ctx, mut evt_loop) = ContextBuilder::new("sil", "Fenhl")
         .window_mode(WindowMode {
             fullscreen_type: FullscreenType::True,
             ..WindowMode::default()
         })
-        .build()?;
-    let mut handler = Handler::new(&mut ctx, true)?; //TODO add option to enable light mode
-    ggez::event::run(&mut ctx, &mut evt_loop, &mut handler)
+        .build().expect("failed to build ggez context");
+    let mut handler = Handler::new(&mut ctx, true).expect("failed to build ggez handler"); //TODO add option to enable light mode
+    ggez::event::run(&mut ctx, &mut evt_loop, &mut handler).expect("error in main loop");
 }
