@@ -3,57 +3,68 @@
 use {
     std::{
         env,
-        time::Duration
+        fmt,
+        path::Path,
     },
-    chrono::prelude::*,
+    async_proto::Protocol as _,
+    derive_more::From,
+    futures::stream::StreamExt as _,
+    gefolge_websocket::event::Delta as Packet,
     ggez::{
         Context,
         ContextBuilder,
+        GameError,
         GameResult,
         conf::{
             FullscreenType,
-            WindowMode
+            ModuleConf,
+            WindowMode,
+            WindowSetup,
         },
         event::EventHandler,
+        filesystem,
         graphics::{
             self,
-            BLACK,
             Color,
-            //Font,
+            DrawParam,
+            Drawable as _,
+            Font,
             Rect,
-            WHITE
+            Text,
+            TextFragment,
+            set_mode,
+            supported_resolutions,
         },
         input::mouse,
-        timer
+        timer,
     },
-    crate::{
-        config::Config,
-        event::Event
-    }
+    structopt::StructOpt,
+    tokio_tungstenite::tungstenite,
+    winit::dpi::PhysicalSize,
+    crate::config::Config,
 };
 
 mod config;
-mod event;
 
 struct Handler {
     bg: Color,
-    //dejavu_sans: Font,
-    //fg: Color,
+    dejavu_sans: Font,
+    fg: Color,
     init: bool
 }
 
 impl Handler {
-    fn new(_: &mut Context, dark: bool) -> GameResult<Handler> {
+    fn new(ctx: &mut Context, dark: bool) -> GameResult<Handler> {
         Ok(Handler {
-            bg: if dark { BLACK } else { WHITE },
-            //dejavu_sans: Font::new(ctx, "/fonts/dejavu/DejaVuSans.ttf")?,
-            //fg: if dark { WHITE } else { BLACK },
+            bg: if dark { Color::BLACK } else { Color::WHITE },
+            dejavu_sans: Font::new(ctx, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")?,
+            fg: if dark { Color::WHITE } else { Color::BLACK },
             init: false
         })
     }
 }
 
-impl EventHandler for Handler {
+impl EventHandler<GameError> for Handler {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         if !self.init {
             let (w, h) = graphics::drawable_size(ctx);
@@ -67,34 +78,90 @@ impl EventHandler for Handler {
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
         graphics::clear(ctx, self.bg);
         //TODO draw the rest of the fucking owl
+        let text = Text::new(TextFragment::new((format!("FPS: {}", timer::fps(ctx)), self.dejavu_sans, 100.0)).color(self.fg));
+        text.draw(ctx, DrawParam::default())?;
         graphics::present(ctx)?;
         timer::yield_now();
         Ok(())
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let config = Config::new().expect("failed to read config");
-    let client = reqwest::Client::builder()
-        .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(600))
-        .build().expect("failed to build HTTP client");
-    if env::args().skip(1).any(|arg| arg == "--conditional") {
-        let current_event = match Event::current(&config, &client).await.expect("failed to get current event") {
-            Some(event) => event,
-            None => return
-        };
-        if current_event.start().single().map_or(false, |start| Utc::now() < start) || current_event.end().single().map_or(false, |end| end <= Utc::now()) {
-            return
+#[derive(From)]
+enum Error {
+    Config(config::Error),
+    Connection(tungstenite::Error),
+    Game(GameError),
+    Read(async_proto::ReadError),
+    Reqwest(reqwest::Error),
+    Server {
+        //debug: String,
+        display: String,
+    },
+    Write(async_proto::WriteError),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Config(e) => write!(f, "config error: {}", e),
+            Error::Connection(e) => write!(f, "WebSocket connection error: {}", e),
+            Error::Game(e) => write!(f, "GUI error: {}", e),
+            Error::Read(e) => write!(f, "error reading from WebSocket: {}", e),
+            Error::Reqwest(e) => if let Some(url) = e.url() {
+                write!(f, "HTTP error at {}: {}", url, e)
+            } else {
+                write!(f, "HTTP error: {}", e)
+            },
+            Error::Server { display } => write!(f, "server error: {}", display),
+            Error::Write(e) => write!(f, "error writing to WebSocket: {}", e),
         }
     }
-    let (mut ctx, mut evt_loop) = ContextBuilder::new("sil", "Fenhl")
-        .window_mode(WindowMode {
+}
+
+#[derive(StructOpt)]
+struct Args {
+    #[structopt(long)]
+    conditional: bool,
+}
+
+#[wheel::main]
+async fn main(args: Args) -> Result<(), Error> {
+    if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(()) } // only start on device startup, not when SSHing in etc
+    let config = Config::new().await?;
+    let (mut sink, mut stream) = tokio_tungstenite::connect_async(/*"wss://gefolge.org/api/websocket"*/ "ws://192.168.178.59:24802/websocket").await?.0.split(); //DEBUG
+    config.api_key.write_ws(&mut sink).await?;
+    1u8.write_ws(&mut sink).await?; // session purpose: current event
+    let _ /*current_event*/ = loop {
+        let packet = Packet::read_ws(&mut stream).await?;
+        break match packet {
+            Packet::Ping => continue, //TODO send pong
+            Packet::Error { display, .. } => return Err(Error::Server { display }),
+            Packet::NoEvent => if args.conditional { return Ok(()) } else { None },
+            Packet::CurrentEvent(id) => Some(id),
+        }
+    };
+    let (mut ctx, evt_loop) = ContextBuilder::new("sil", "Fenhl")
+        .window_setup(WindowSetup {
+            title: format!("Gefolge-Silvester-Beamer"),
+            ..WindowSetup::default()
+        })
+        .modules(ModuleConf {
+            gamepad: false,
+            audio: false,
+        })
+        .build()?;
+    filesystem::mount(&mut ctx, Path::new("/"), true); // for font support
+    if let Some(PhysicalSize { width, height }) = supported_resolutions(&ctx).max_by_key(|PhysicalSize { width, height }| width * height) {
+        set_mode(&mut ctx, WindowMode {
+            width: width as f32,
+            height: height as f32,
             fullscreen_type: FullscreenType::True,
             ..WindowMode::default()
-        })
-        .build().expect("failed to build ggez context");
-    let mut handler = Handler::new(&mut ctx, true).expect("failed to build ggez handler"); //TODO add option to enable light mode
-    ggez::event::run(&mut ctx, &mut evt_loop, &mut handler).expect("error in main loop");
+        })?;
+    } else {
+        eprintln!("could not go fullscreen, no supported resolutions");
+    }
+    let handler = Handler::new(&mut ctx, true)?; //TODO add option to enable light mode
+    //TODO also keep polling websocket in separate task
+    ggez::event::run(ctx, evt_loop, handler)
 }
