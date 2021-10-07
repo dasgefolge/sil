@@ -120,15 +120,19 @@ impl fmt::Display for Error {
 
 #[derive(StructOpt)]
 struct Args {
+    /// Exit on startup if there is no current event
     #[structopt(long)]
     conditional: bool,
+    /// Connect to a local WebSocket server instead of gefolge.org
+    #[structopt(long)]
+    local: bool,
 }
 
 #[wheel::main]
 async fn main(args: Args) -> Result<(), Error> {
     if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(()) } // only start on device startup, not when SSHing in etc
     let config = Config::new().await?;
-    let (mut sink, mut stream) = tokio_tungstenite::connect_async(/*"wss://gefolge.org/api/websocket"*/ "ws://192.168.178.59:24802/websocket").await?.0.split(); //DEBUG
+    let (mut sink, mut stream) = tokio_tungstenite::connect_async(if args.local { "ws://localhost:24802/api/websocket" } else { "wss://gefolge.org/api/websocket" }).await?.0.split();
     config.api_key.write_ws(&mut sink).await?;
     1u8.write_ws(&mut sink).await?; // session purpose: current event
     let _ /*current_event*/ = loop {
