@@ -32,7 +32,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "I/O error: {}", e),
             Error::Json(e) => write!(f, "JSON error: {}", e),
-            Error::MissingConfig => write!(f, "config file missing"),
+            Error::MissingConfig => write!(f, "config file missing, create at $XDG_CONFIG_DIRS/fidera/client-config.json"),
         }
     }
 }
