@@ -5,6 +5,7 @@ use {
         sync::Arc,
         time::Duration,
     },
+    chrono::prelude::*,
     chrono_tz::Tz,
     enum_iterator::IntoEnumIterator,
     futures::{
@@ -30,6 +31,7 @@ use {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, IntoEnumIterator)]
 enum Mode {
+    BinaryTime,
     HexagesimalTime,
     Logo,
 }
@@ -37,7 +39,17 @@ enum Mode {
 impl Mode {
     fn state(&self, current_event: Option<&Event>) -> Option<State> {
         match self {
-            Self::HexagesimalTime => current_event.map(|event| State::HexagesimalTime(event.timezone)),
+            Self::BinaryTime => {
+                let timezone = current_event?.timezone;
+                let now = Utc::now().with_timezone(&timezone);
+                let tomorrow = now.date().succ();
+                if tomorrow.month() == 1 && tomorrow.day() == 1 {
+                    Some(State::BinaryTime(timezone))
+                } else {
+                    None
+                }
+            }
+            Self::HexagesimalTime => Some(State::HexagesimalTime(current_event?.timezone)),
             Self::Logo => None,
         }
     }
@@ -45,6 +57,7 @@ impl Mode {
 
 #[derive(Debug, Clone)]
 pub(crate) enum State {
+    BinaryTime(Tz),
     Error(Arc<Error>),
     HexagesimalTime(Tz),
     Logo {

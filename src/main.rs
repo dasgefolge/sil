@@ -35,10 +35,12 @@ use {
         graphics::{
             self,
             Color,
+            DrawMode,
             DrawParam,
             Drawable as _,
             Font,
             Image,
+            Mesh,
             Rect,
             set_mode,
         },
@@ -124,6 +126,23 @@ impl EventHandler<GameError> for Handler {
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
         graphics::clear(ctx, self.bg);
         match self.state {
+            State::BinaryTime(tz) => {
+                let now = Utc::now().with_timezone(&tz);
+                let mut fract = (now.time() - NaiveTime::from_hms(0, 0, 0)).to_std().expect("nonnegative time of day").as_secs_f32() / 86_400.0;
+                let bit_width = self.resolution.width as f32 / 4.0;
+                let bit_height = self.resolution.height as f32 / 4.0;
+                for y in 0..4 {
+                    for x in 0..4 {
+                        fract *= 2.0;
+                        Mesh::new_rectangle(
+                            ctx,
+                            DrawMode::fill(),
+                            Rect { x: x as f32 * bit_width, y: y as f32 * bit_height, w: bit_width, h: bit_height },
+                            if fract >= 1.0 { fract -= 1.0; Color::WHITE } else { Color::BLACK },
+                        )?.draw(ctx, DrawParam::default())?;
+                    }
+                }
+            }
             State::Error(ref e) => {
                 graphics::clear(ctx, Color::RED);
                 TextBox::new(format!("{0}\n\n{0:?}", e)).color(Color::WHITE).draw(self, ctx)?;
