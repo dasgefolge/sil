@@ -8,11 +8,14 @@ use {
         os::unix::process::CommandExt as _,
         path::Path,
         process::ExitStatus,
-        time::Duration,
+        time::Duration as StdDuration,
     },
     async_proto::Protocol as _,
     async_trait::async_trait,
-    chrono::prelude::*,
+    chrono::{
+        Duration,
+        prelude::*,
+    },
     derive_more::From,
     futures::stream::StreamExt as _,
     gefolge_websocket::event::{
@@ -98,7 +101,7 @@ impl Handler {
 
 impl EventHandler<GameError> for Handler {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
-        if !self.init && timer::time_since_start(ctx) > Duration::from_secs(2) { //HACK wait 2 seconds before going fullscreen to circumvent a potential race condition where `set_mode` can be ignored if called too early
+        if !self.init && timer::time_since_start(ctx) > StdDuration::from_secs(2) { //HACK wait 2 seconds before going fullscreen to circumvent a potential race condition where `set_mode` can be ignored if called too early
             if let Some(current_monitor) = graphics::window(&ctx).current_monitor() {
                 self.resolution = current_monitor.size();
                 let PhysicalSize { width, height } = self.resolution;
@@ -158,6 +161,27 @@ impl EventHandler<GameError> for Handler {
                     img.draw(ctx, DrawParam::default().dest([self.resolution.width as f32 / 2.0, self.resolution.height as f32 / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
                 }
                 TextBox::new(msg).size(24.0).valign(VerticalAlign::Bottom).draw(self, ctx)?;
+            }
+            State::NewYear(tz) => {
+                let now = Utc::now().with_timezone(&tz);
+                if now.month() > 6 {
+                    let mut delta = now.timezone().ymd(now.year() + 1, 1, 1).and_hms(0, 0, 0) - now;
+                    if delta < Duration::minutes(1) {
+                        TextBox::new(delta.num_seconds().to_string()).size(400.0)
+                    } else if delta < Duration::hours(1) {
+                        let mins = delta.num_minutes();
+                        delta = delta - Duration::minutes(mins);
+                        TextBox::new(format!("{}:{:02}", mins, delta.num_seconds())).size(200.0)
+                    } else {
+                        let hours = delta.num_hours();
+                        delta = delta - Duration::hours(hours);
+                        let mins = delta.num_minutes();
+                        delta = delta - Duration::minutes(mins);
+                        TextBox::new(format!("{}:{:02}:{:02}", hours, mins, delta.num_seconds())).size(200.0)
+                    }.draw(self, ctx)?;
+                } else {
+                    TextBox::new(now.year().to_string()).size(400.0).draw(self, ctx)?;
+                }
             }
         }
         graphics::present(ctx)?;
@@ -284,6 +308,10 @@ async fn main(args: Args) -> Result<(), Error> {
         .window_setup(WindowSetup {
             title: format!("Gefolge-Silvester-Beamer"),
             ..WindowSetup::default()
+        })
+        .window_mode(WindowMode {
+            resizable: true,
+            ..WindowMode::default()
         })
         .modules(ModuleConf {
             gamepad: false,

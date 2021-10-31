@@ -65,7 +65,7 @@ features = ["paw"]
 
 [dependencies.tokio]
 version = "1"
-features = ["fs", "macros", "process", "rt-multi-thread", "time"]
+features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"]
 
 [dependencies.tokio-tungstenite]
 version = "0.15"

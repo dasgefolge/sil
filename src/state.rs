@@ -3,9 +3,12 @@ use {
         collections::HashSet,
         convert::Infallible as Never,
         sync::Arc,
-        time::Duration,
+        time::Duration as StdDuration,
     },
-    chrono::prelude::*,
+    chrono::{
+        Duration,
+        prelude::*,
+    },
     chrono_tz::Tz,
     enum_iterator::IntoEnumIterator,
     futures::{
@@ -34,25 +37,47 @@ enum Mode {
     BinaryTime,
     HexagesimalTime,
     Logo,
+    NewYear,
 }
 
 impl Mode {
-    fn state(&self, current_event: Option<&Event>) -> Option<State> {
+    fn state(&self, current_event: Option<&Event>) -> Option<(Priority, State)> {
         match self {
             Self::BinaryTime => {
                 let timezone = current_event?.timezone;
                 let now = Utc::now().with_timezone(&timezone);
                 let tomorrow = now.date().succ();
                 if tomorrow.month() == 1 && tomorrow.day() == 1 {
-                    Some(State::BinaryTime(timezone))
+                    Some((Priority::Normal, State::BinaryTime(timezone)))
                 } else {
                     None
                 }
             }
-            Self::HexagesimalTime => Some(State::HexagesimalTime(current_event?.timezone)),
+            Self::HexagesimalTime => Some((Priority::Normal, State::HexagesimalTime(current_event?.timezone))),
             Self::Logo => None,
+            Self::NewYear => {
+                let timezone = current_event?.timezone;
+                let now = Utc::now().with_timezone(&timezone);
+                if now.month() == 1 && now.day() == 1 && now.hour() == 1 {
+                    Some(Priority::Programm)
+                } else {
+                    let tomorrow = now.date().succ();
+                    (tomorrow.month() == 1 && tomorrow.day() == 1).then(|| if tomorrow.and_hms(0, 0, 0) - now < Duration::hours(1).into() {
+                        Priority::Programm
+                    } else {
+                        Priority::Normal
+                    })
+                }.map(|priority| (priority, State::NewYear(timezone)))
+            }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Priority {
+    Fallback,
+    Normal,
+    Programm,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +89,7 @@ pub(crate) enum State {
         msg: &'static str,
         img: Option<Vec<u8>>,
     },
+    NewYear(Tz),
 }
 
 impl State {
@@ -112,26 +138,28 @@ async fn maintain_inner(mut rng: impl Rng, current_event: Option<Event>, states_
     if rng.gen_bool(0.1) {
         state.set_message("reticulating splines");
         states_tx.send(state.clone()).await?;
-        sleep(Duration::from_secs_f64(rng.gen_range(0.5..1.5))).await;
+        sleep(StdDuration::from_secs_f64(rng.gen_range(0.5..1.5))).await;
     }
     state.set_message("determining first mode");
     states_tx.send(state.clone()).await?;
     let mut seen_modes = HashSet::new();
     loop { //TODO keep listening to WebSocket
         let mut available_modes = Mode::into_enum_iter().filter_map(|mode| Some((mode, mode.state(current_event.as_ref())?))).collect::<Vec<_>>();
+        let max_priority = available_modes.iter().map(|(_, (priority, _))| *priority).max().unwrap_or(Priority::Fallback);
+        available_modes.retain(|(_, (iter_priority, _))| *iter_priority == max_priority);
         if available_modes.iter().any(|(mode, _)| !seen_modes.contains(mode)) {
             available_modes.retain(|(mode, _)| !seen_modes.contains(mode));
         } else {
             seen_modes.clear();
         }
-        if let Some((mode, new_state)) = available_modes.choose(&mut rng) {
+        if let Some((mode, (_, new_state))) = available_modes.choose(&mut rng) {
             seen_modes.insert(*mode);
-            state.set(new_state);
+            state.set(new_state); //TODO reload image if necessary
         } else {
             state.set_message("no modes available");
         };
         states_tx.send(state.clone()).await?;
-        sleep(Duration::from_secs(10)).await;
+        sleep(StdDuration::from_secs(10)).await;
     }
 }
 
