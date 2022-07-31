@@ -3319,6 +3319,7 @@ dependencies = [
  "ggez",
  "git2",
  "image",
+ "itertools",
  "rand",
  "reqwest",
  "serde",

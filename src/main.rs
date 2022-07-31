@@ -48,8 +48,10 @@ use {
         winit::dpi::PhysicalSize,
     },
     image::ImageFormat,
+    itertools::Itertools as _,
     rand::prelude::*,
     tokio::{
+        fs,
         process::Command,
         sync::mpsc,
     },
@@ -67,6 +69,9 @@ mod state;
 mod text;
 
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
+
+const BIN_PATH: &str = "/home/fenhl/bin/sil";
+const REIWA_BIN_PATH: &str = "/home/fenhl/bin/sil-reiwa";
 
 struct Handler {
     resolution: PhysicalSize<u32>,
@@ -144,14 +149,14 @@ impl EventHandler<GameError> for Handler {
             }
             State::Error(ref e) => {
                 graphics::clear(ctx, Color::RED);
-                TextBox::new(format!("{0}\n\n{0:?}", e)).color(Color::WHITE).draw(self, ctx)?;
+                TextBox::new(format!("{e}\n\n{e:?}")).color(Color::WHITE).draw(self, ctx)?;
             }
             State::HexagesimalTime(tz) => {
                 TextBox::new(Utc::now().with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string()).draw(self, ctx)?;
             }
             State::Logo { msg, ref img } => {
                 let Rect { w, h, .. } = graphics::screen_coordinates(ctx);
-                TextBox::new(format!("{}x{} on {}x{}, {:.2}FPS", w, h, self.resolution.width, self.resolution.height, timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
+                TextBox::new(format!("{w}x{h} on {}x{}, {:.2}FPS", self.resolution.width, self.resolution.height, timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
                 if let Some(img) = img {
                     let img = Image::from_bytes_with_format(ctx, &img, ImageFormat::Png)?;
                     img.draw(ctx, DrawParam::default().dest([self.resolution.width as f32 / 2.0, self.resolution.height as f32 / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
@@ -167,13 +172,13 @@ impl EventHandler<GameError> for Handler {
                     } else if delta < Duration::hours(1) {
                         let mins = delta.num_minutes();
                         delta = delta - Duration::minutes(mins);
-                        TextBox::new(format!("{}:{:02}", mins, delta.num_seconds())).size(200.0)
+                        TextBox::new(format!("{mins}:{:02}", delta.num_seconds())).size(200.0)
                     } else {
                         let hours = delta.num_hours();
                         delta = delta - Duration::hours(hours);
                         let mins = delta.num_minutes();
                         delta = delta - Duration::minutes(mins);
-                        TextBox::new(format!("{}:{:02}:{:02}", hours, mins, delta.num_seconds())).size(200.0)
+                        TextBox::new(format!("{hours}:{mins:02}:{:02}", delta.num_seconds())).size(200.0)
                     }.draw(self, ctx)?;
                 } else {
                     TextBox::new(now.year().to_string()).size(400.0).draw(self, ctx)?;
@@ -187,7 +192,11 @@ impl EventHandler<GameError> for Handler {
 }
 
 fn display_update_error() -> String {
-    let e = std::process::Command::new("sil").exec();
+    let current_exe = match env::current_exe() {
+        Ok(current_exe) => current_exe,
+        Err(e) => return format!("error determining current exe: {e}"),
+    };
+    let e = std::process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
     format!("error restarting for update: {e}")
 }
 
@@ -217,12 +226,13 @@ async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
     if commit_hash == GIT_COMMIT_HASH {
         Ok(())
     } else {
-        Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/master/target/release/sil").arg("/home/fenhl/bin/sil").check("scp").await?;
+        println!("updating sil from {:02x} to {:02x}", GIT_COMMIT_HASH.into_iter().take(4).format(""), commit_hash.iter().take(4).format(""));
+        Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/master/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
         Err(Error::Update)
     }
 }
 
-#[derive(clap::Parser)]
+#[derive(clap::Parser, wheel::IsVerbose)]
 struct Args {
     /// Exit on startup if there is no current event
     #[clap(long)]
@@ -233,13 +243,23 @@ struct Args {
     /// Pretend that there's currently an ongoing event for debugging purposes
     #[clap(long)]
     mock_event: bool,
+    /// Include debug info in error exits
+    #[clap(short, long)]
+    verbose: bool,
     /// Connect to the specified WebSocket server instead of gefolge.org
     #[clap(long, default_value = "wss://gefolge.org/api/websocket")]
     ws_url: String,
 }
 
-#[wheel::main]
+#[wheel::main(verbose_debug)]
 async fn main(args: Args) -> Result<(), Error> {
+    let current_exe = env::current_exe()?;
+    if current_exe == Path::new(REIWA_BIN_PATH) {
+        fs::copy(REIWA_BIN_PATH, BIN_PATH).await?;
+        return Err(std::process::Command::new(BIN_PATH).exec().into())
+    } else if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() {
+        fs::remove_file(REIWA_BIN_PATH).await?;
+    }
     if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(()) } // only start on device startup, not when SSHing in etc
     let current_event = if args.mock_event {
         Some(Event {
