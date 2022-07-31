@@ -10,7 +10,10 @@ use {
         prelude::*,
     },
     chrono_tz::Tz,
-    enum_iterator::IntoEnumIterator,
+    enum_iterator::{
+        Sequence,
+        all,
+    },
     futures::{
         pin_mut,
         stream::{
@@ -32,7 +35,7 @@ use {
     crate::Error,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, IntoEnumIterator)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Sequence)]
 enum Mode {
     BinaryTime,
     HexagesimalTime,
@@ -144,7 +147,7 @@ async fn maintain_inner(mut rng: impl Rng, current_event: Option<Event>, states_
     states_tx.send(state.clone()).await?;
     let mut seen_modes = HashSet::new();
     loop { //TODO keep listening to WebSocket
-        let mut available_modes = Mode::into_enum_iter().filter_map(|mode| Some((mode, mode.state(current_event.as_ref())?))).collect::<Vec<_>>();
+        let mut available_modes = all::<Mode>().filter_map(|mode| Some((mode, mode.state(current_event.as_ref())?))).collect::<Vec<_>>();
         let max_priority = available_modes.iter().map(|(_, (priority, _))| *priority).max().unwrap_or(Priority::Fallback);
         available_modes.retain(|(_, (iter_priority, _))| *iter_priority == max_priority);
         if available_modes.iter().any(|(mode, _)| !seen_modes.contains(mode)) {

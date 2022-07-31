@@ -1,9 +1,5 @@
 use {
-    std::{
-        fmt,
-        io,
-    },
-    derive_more::From,
+    std::io,
     futures::{
         pin_mut,
         stream::{
@@ -20,21 +16,12 @@ use {
 
 const PATH: &str = "fidera/client-config.json";
 
-#[derive(Debug, From)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    Io(io::Error),
-    Json(serde_json::Error),
+    #[error(transparent)] Io(#[from] io::Error),
+    #[error(transparent)] Json(#[from] serde_json::Error),
+    #[error("config file missing, create at $XDG_CONFIG_DIRS/fidera/client-config.json")]
     MissingConfig,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io(e) => write!(f, "I/O error: {}", e),
-            Error::Json(e) => write!(f, "JSON error: {}", e),
-            Error::MissingConfig => write!(f, "config file missing, create at $XDG_CONFIG_DIRS/fidera/client-config.json"),
-        }
-    }
 }
 
 #[derive(Deserialize)]

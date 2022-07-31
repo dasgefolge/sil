@@ -3,20 +3,16 @@
 use {
     std::{
         env,
-        fmt,
         io,
         os::unix::process::CommandExt as _,
         path::Path,
-        process::ExitStatus,
         time::Duration as StdDuration,
     },
     async_proto::Protocol as _,
-    async_trait::async_trait,
     chrono::{
         Duration,
         prelude::*,
     },
-    derive_more::From,
     futures::stream::StreamExt as _,
     gefolge_websocket::event::{
         Event,
@@ -49,16 +45,16 @@ use {
         },
         input::mouse,
         timer,
+        winit::dpi::PhysicalSize,
     },
     image::ImageFormat,
     rand::prelude::*,
-    structopt::StructOpt,
     tokio::{
         process::Command,
         sync::mpsc,
     },
     tokio_tungstenite::tungstenite,
-    winit::dpi::PhysicalSize,
+    wheel::traits::AsyncCommandOutputExt as _,
     crate::{
         config::Config,
         state::State,
@@ -190,66 +186,31 @@ impl EventHandler<GameError> for Handler {
     }
 }
 
-#[derive(Debug, From)]
+fn display_update_error() -> String {
+    let e = std::process::Command::new("sil").exec();
+    format!("error restarting for update: {e}")
+}
+
+#[derive(Debug, thiserror::Error)]
 enum Error {
-    BaseDir(xdg_basedir::Error),
-    CommandExit(&'static str, ExitStatus),
-    Config(config::Error),
-    Connection(tungstenite::Error),
-    Game(GameError),
-    Io(io::Error),
-    Read(async_proto::ReadError),
-    Reqwest(reqwest::Error),
-    SendState(mpsc::error::SendError<State>),
+    #[error(transparent)] BaseDir(#[from] xdg_basedir::Error),
+    #[error(transparent)] Config(#[from] config::Error),
+    #[error(transparent)] Connection(#[from] tungstenite::Error),
+    #[error(transparent)] Game(#[from] GameError),
+    #[error(transparent)] Io(#[from] io::Error),
+    #[error(transparent)] Read(#[from] async_proto::ReadError),
+    #[error(transparent)] Reqwest(#[from] reqwest::Error),
+    #[error(transparent)] SendState(#[from] mpsc::error::SendError<State>),
+    #[error(transparent)] Wheel(#[from] wheel::Error),
+    #[error(transparent)] Write(#[from] async_proto::WriteError),
+    #[error("{display}")]
     Server {
         //debug: String,
         display: String,
     },
+    //HACK use the `Display` impl instead of directly calling `exec` to restart the program to make sure destructors run normally
+    #[error("{}", display_update_error())]
     Update,
-    Write(async_proto::WriteError),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::BaseDir(e) => write!(f, "XDG base directory error: {}", e),
-            Error::CommandExit(cmd, status) => write!(f, "command `{}` exited with {}", cmd, status),
-            Error::Config(e) => write!(f, "config error: {}", e),
-            Error::Connection(e) => write!(f, "WebSocket connection error: {}", e),
-            Error::Game(e) => write!(f, "GUI error: {}", e),
-            Error::Io(e) => write!(f, "I/O error: {}", e),
-            Error::Read(e) => write!(f, "error reading from WebSocket: {}", e),
-            Error::Reqwest(e) => if let Some(url) = e.url() {
-                write!(f, "HTTP error at {}: {}", url, e)
-            } else {
-                write!(f, "HTTP error: {}", e)
-            },
-            Error::SendState(e) => write!(f, "sending state failed: {}", e),
-            Error::Server { display } => write!(f, "server error: {}", display),
-            Error::Update => { //HACK use the `Display` impl instead of directly calling `exec` to restart the program to make sure destructors run normally
-                let e = std::process::Command::new("sil").exec();
-                write!(f, "error restarting for update: {}", e)
-            }
-            Error::Write(e) => write!(f, "error writing to WebSocket: {}", e),
-        }
-    }
-}
-
-#[async_trait]
-trait CommandOutputExt {
-    async fn check(&mut self, name: &'static str) -> Result<ExitStatus, Error>;
-}
-
-#[async_trait]
-impl CommandOutputExt for Command {
-    async fn check(&mut self, name: &'static str) -> Result<ExitStatus, Error> {
-        let status = self.status().await?;
-        if status.success() {
-            Ok(status)
-        } else {
-            Err(Error::CommandExit(name, status))
-        }
-    }
 }
 
 async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
@@ -261,19 +222,19 @@ async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
     }
 }
 
-#[derive(StructOpt)]
+#[derive(clap::Parser)]
 struct Args {
     /// Exit on startup if there is no current event
-    #[structopt(long)]
+    #[clap(long)]
     conditional: bool,
     /// Use a light theme with mostly white backgrounds and black text
-    #[structopt(long)]
+    #[clap(long)]
     light: bool,
     /// Pretend that there's currently an ongoing event for debugging purposes
-    #[structopt(long)]
+    #[clap(long)]
     mock_event: bool,
     /// Connect to the specified WebSocket server instead of gefolge.org
-    #[structopt(long, default_value = "wss://gefolge.org/api/websocket")]
+    #[clap(long, default_value = "wss://gefolge.org/api/websocket")]
     ws_url: String,
 }
 
