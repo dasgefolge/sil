@@ -9,6 +9,8 @@ use ggez::{
         PxScale,
         Text,
         TextFragment,
+        Transform,
+        mint,
     },
 };
 
@@ -60,32 +62,35 @@ impl TextBox {
         for fragment in self.text.fragments_mut() {
             fragment.color.get_or_insert(self.color.unwrap_or(handler.fg));
         }
-        self.text
-            .set_font(handler.dejavu_sans, PxScale::from(self.size))
-            .set_bounds([handler.resolution.width as f32 - self.size, handler.resolution.height as f32 - self.size], self.halign)
-            .draw(ctx, DrawParam::default().dest([
-                match self.halign {
-                    HorizontalAlign::Left => self.size / 2.0,
-                    HorizontalAlign::Center => handler.resolution.width as f32 / 2.0,
-                    HorizontalAlign::Right => handler.resolution.width as f32 - self.size / 2.0,
-                },
-                match self.valign {
-                    VerticalAlign::Top => self.size / 2.0,
-                    VerticalAlign::Middle => handler.resolution.height as f32 / 2.0,
-                    VerticalAlign::Bottom => handler.resolution.height as f32 - self.size / 2.0,
-                },
-            ]).offset([
-                match self.halign {
-                    HorizontalAlign::Left => 0.0,
-                    HorizontalAlign::Center => 0.5,
-                    HorizontalAlign::Right => 1.0,
-                },
-                match self.valign {
-                    VerticalAlign::Top => 0.0,
-                    VerticalAlign::Middle => 0.5,
-                    VerticalAlign::Bottom => 1.0,
-                },
-            ]))
+        self.text.set_font(handler.dejavu_sans, PxScale::from(self.size));
+        self.text.set_bounds([handler.resolution.width as f32 - self.size, handler.resolution.height as f32 - self.size], self.halign);
+        let mut param = DrawParam::default().dest([
+            self.size / 2.0,
+            // only handle the y coordinate this way, as the horizontal alignment
+            // automatically takes care of the x coordinate
+            match self.valign {
+                VerticalAlign::Top => self.size / 2.0,
+                VerticalAlign::Middle => handler.resolution.height as f32 / 2.0,
+                VerticalAlign::Bottom => handler.resolution.height as f32 - self.size / 2.0,
+            },
+        ]).offset([
+            0.0,
+            // same with the offset
+            match self.valign {
+                VerticalAlign::Top => 0.0,
+                VerticalAlign::Middle => 0.5,
+                VerticalAlign::Bottom => 1.0,
+            },
+        ]);
+        if let Transform::Values { offset, .. } = param.trans {
+            let dim = self.text.dimensions(ctx);
+            let new_offset = mint::Vector2 {
+                x: offset.x * dim.w + dim.x,
+                y: offset.y * dim.h + dim.y,
+            };
+            param = param.offset(new_offset);
+        }
+        self.text.draw(ctx, param)
     }
 }
 
