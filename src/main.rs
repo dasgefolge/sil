@@ -4,7 +4,6 @@ use {
     std::{
         env,
         io,
-        os::unix::process::CommandExt as _,
         path::Path,
         time::Duration as StdDuration,
     },
@@ -51,7 +50,6 @@ use {
     itertools::Itertools as _,
     rand::prelude::*,
     tokio::{
-        fs,
         process::Command,
         sync::mpsc,
     },
@@ -63,6 +61,10 @@ use {
         text::*,
     },
 };
+#[cfg(unix)] use {
+    std::os::unix::process::CommandExt as _,
+    tokio::fs,
+};
 
 mod config;
 mod state;
@@ -70,8 +72,11 @@ mod text;
 
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
-const BIN_PATH: &str = "/home/fenhl/bin/sil";
+#[cfg(unix)] const BIN_PATH: &str = "/home/fenhl/bin/sil";
 const REIWA_BIN_PATH: &str = "/home/fenhl/bin/sil-reiwa";
+
+#[cfg(target_os = "linux")] const DEJAVU_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+#[cfg(target_os = "windows")] const DEJAVU_PATH: &str = "\\Windows\\Fonts\\DejaVuSans.ttf";
 
 struct Handler {
     resolution: PhysicalSize<u32>,
@@ -90,7 +95,7 @@ impl Handler {
             resolution: PhysicalSize { width: 813, height: 813 },
             bg: if dark { Color::BLACK } else { Color::WHITE },
             fg: if dark { Color::WHITE } else { Color::BLACK },
-            dejavu_sans: Font::new(ctx, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")?,
+            dejavu_sans: Font::new(ctx, DEJAVU_PATH)?,
             init: false,
             state: State::Logo {
                 msg: "loading the loader",
@@ -191,6 +196,7 @@ impl EventHandler<GameError> for Handler {
     }
 }
 
+#[cfg(unix)]
 fn display_update_error() -> String {
     let current_exe = match env::current_exe() {
         Ok(current_exe) => current_exe,
@@ -198,6 +204,11 @@ fn display_update_error() -> String {
     };
     let e = std::process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
     format!("error restarting for update: {e}")
+}
+
+#[cfg(windows)]
+fn display_update_error() -> String {
+    format!("please update sil")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,6 +244,7 @@ async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
 }
 
 #[derive(clap::Parser, wheel::IsVerbose)]
+#[clap(version)]
 struct Args {
     /// Exit on startup if there is no current event
     #[clap(long)]
@@ -253,12 +265,14 @@ struct Args {
 
 #[wheel::main(verbose_debug)]
 async fn main(args: Args) -> Result<(), Error> {
-    let current_exe = env::current_exe()?;
-    if current_exe == Path::new(REIWA_BIN_PATH) {
-        fs::copy(REIWA_BIN_PATH, BIN_PATH).await?;
-        return Err(std::process::Command::new(BIN_PATH).exec().into())
-    } else if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() {
-        fs::remove_file(REIWA_BIN_PATH).await?;
+    #[cfg(unix)] {
+        let current_exe = env::current_exe()?;
+        if current_exe == Path::new(REIWA_BIN_PATH) {
+            fs::copy(REIWA_BIN_PATH, BIN_PATH).await?;
+            return Err(std::process::Command::new(BIN_PATH).exec().into())
+        } else if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() {
+            fs::remove_file(REIWA_BIN_PATH).await?;
+        }
     }
     if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(()) } // only start on device startup, not when SSHing in etc
     let current_event = if args.mock_event {
@@ -299,7 +313,8 @@ async fn main(args: Args) -> Result<(), Error> {
             audio: false,
         })
         .build()?;
-    filesystem::mount(&mut ctx, Path::new("/"), true); // for font support
+    #[cfg(windows)] filesystem::mount(&mut ctx, Path::new("C:\\"), true); // for font support
+    #[cfg(not(windows))] filesystem::mount(&mut ctx, Path::new("/"), true); // for font support
     let (state_tx, state_rx) = mpsc::channel(128);
     tokio::task::spawn(state::maintain(SmallRng::from_entropy(), current_event, state_tx));
     let handler = Handler::new(&mut ctx, !args.light, state_rx)?;
