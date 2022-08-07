@@ -47,14 +47,9 @@ use {
         winit::dpi::PhysicalSize,
     },
     image::ImageFormat,
-    itertools::Itertools as _,
     rand::prelude::*,
-    tokio::{
-        process::Command,
-        sync::mpsc,
-    },
+    tokio::sync::mpsc,
     tokio_tungstenite::tungstenite,
-    wheel::traits::AsyncCommandOutputExt as _,
     crate::{
         config::Config,
         state::State,
@@ -63,7 +58,12 @@ use {
 };
 #[cfg(unix)] use {
     std::os::unix::process::CommandExt as _,
-    tokio::fs,
+    itertools::Itertools as _,
+    tokio::{
+        fs,
+        process::Command,
+    },
+    wheel::traits::AsyncCommandOutputExt as _,
 };
 
 mod config;
@@ -73,13 +73,12 @@ mod text;
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
 #[cfg(unix)] const BIN_PATH: &str = "/home/fenhl/bin/sil";
-const REIWA_BIN_PATH: &str = "/home/fenhl/bin/sil-reiwa";
+#[cfg(unix)] const REIWA_BIN_PATH: &str = "/home/fenhl/bin/sil-reiwa";
 
 #[cfg(target_os = "linux")] const DEJAVU_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 #[cfg(target_os = "windows")] const DEJAVU_PATH: &str = "\\Windows\\Fonts\\DejaVuSans.ttf";
 
 struct Handler {
-    resolution: PhysicalSize<u32>,
     bg: Color,
     fg: Color,
     dejavu_sans: Font,
@@ -89,14 +88,13 @@ struct Handler {
 }
 
 impl Handler {
-    fn new(ctx: &mut Context, dark: bool, state_rx: mpsc::Receiver<State>) -> GameResult<Handler> {
+    fn new(ctx: &mut Context, dark: bool, windowed: bool, state_rx: mpsc::Receiver<State>) -> GameResult<Handler> {
         Ok(Handler {
             state_rx,
-            resolution: PhysicalSize { width: 813, height: 813 },
             bg: if dark { Color::BLACK } else { Color::WHITE },
             fg: if dark { Color::WHITE } else { Color::BLACK },
             dejavu_sans: Font::new(ctx, DEJAVU_PATH)?,
-            init: false,
+            init: windowed,
             state: State::Logo {
                 msg: "loading the loader",
                 img: None,
@@ -109,8 +107,7 @@ impl EventHandler<GameError> for Handler {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         if !self.init && timer::time_since_start(ctx) > StdDuration::from_secs(2) { //HACK wait 2 seconds before going fullscreen to circumvent a potential race condition where `set_mode` can be ignored if called too early
             if let Some(current_monitor) = graphics::window(&ctx).current_monitor() {
-                self.resolution = current_monitor.size();
-                let PhysicalSize { width, height } = self.resolution;
+                let PhysicalSize { width, height } = current_monitor.size();
                 let width = width as f32;
                 let height = height as f32;
                 set_mode(ctx, WindowMode {
@@ -133,13 +130,15 @@ impl EventHandler<GameError> for Handler {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
+        let (w, h) = graphics::drawable_size(ctx);
+        graphics::set_screen_coordinates(ctx, Rect { x: 0.0, y: 0.0, w, h })?;
         graphics::clear(ctx, self.bg);
         match self.state {
             State::BinaryTime(tz) => {
                 let now = Utc::now().with_timezone(&tz);
                 let mut fract = (now.time() - NaiveTime::from_hms(0, 0, 0)).to_std().expect("nonnegative time of day").as_secs_f32() / 86_400.0;
-                let bit_width = self.resolution.width as f32 / 4.0;
-                let bit_height = self.resolution.height as f32 / 4.0;
+                let bit_width = w / 4.0;
+                let bit_height = h / 4.0;
                 for y in 0..4 {
                     for x in 0..4 {
                         fract *= 2.0;
@@ -160,11 +159,13 @@ impl EventHandler<GameError> for Handler {
                 TextBox::new(Utc::now().with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string()).draw(self, ctx)?;
             }
             State::Logo { msg, ref img } => {
-                let Rect { w, h, .. } = graphics::screen_coordinates(ctx);
-                TextBox::new(format!("{w}x{h} on {}x{}, {:.2}FPS", self.resolution.width, self.resolution.height, timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
+                let coords = graphics::screen_coordinates(ctx);
+                assert_eq!(coords.w, w);
+                assert_eq!(coords.h, h);
+                TextBox::new(format!("{w}x{h}, {:.2}FPS", timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
                 if let Some(img) = img {
                     let img = Image::from_bytes_with_format(ctx, &img, ImageFormat::Png)?;
-                    img.draw(ctx, DrawParam::default().dest([self.resolution.width as f32 / 2.0, self.resolution.height as f32 / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
+                    img.draw(ctx, DrawParam::default().dest([w / 2.0, h / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
                 }
                 TextBox::new(msg).size(24.0).valign(VerticalAlign::Bottom).draw(self, ctx)?;
             }
@@ -237,8 +238,10 @@ async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
     if commit_hash == GIT_COMMIT_HASH {
         Ok(())
     } else {
-        println!("updating sil from {:02x} to {:02x}", GIT_COMMIT_HASH.into_iter().take(4).format(""), commit_hash.iter().take(4).format(""));
-        Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/master/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
+        #[cfg(unix)] {
+            println!("updating sil from {:02x} to {:02x}", GIT_COMMIT_HASH.into_iter().take(4).format(""), commit_hash.iter().take(4).format(""));
+            Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/master/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
+        }
         Err(Error::Update)
     }
 }
@@ -250,14 +253,16 @@ struct Args {
     #[clap(long)]
     conditional: bool,
     /// Use a light theme with mostly white backgrounds and black text
-    #[clap(long)]
+    #[clap(short, long)]
     light: bool,
     /// Pretend that there's currently an ongoing event for debugging purposes
-    #[clap(long)]
+    #[clap(short, long)]
     mock_event: bool,
     /// Include debug info in error exits
     #[clap(short, long)]
     verbose: bool,
+    #[clap(short, long)]
+    windowed: bool,
     /// Connect to the specified WebSocket server instead of gefolge.org
     #[clap(long, default_value = "wss://gefolge.org/api/websocket")]
     ws_url: String,
@@ -317,6 +322,6 @@ async fn main(args: Args) -> Result<(), Error> {
     #[cfg(not(windows))] filesystem::mount(&mut ctx, Path::new("/"), true); // for font support
     let (state_tx, state_rx) = mpsc::channel(128);
     tokio::task::spawn(state::maintain(SmallRng::from_entropy(), current_event, state_tx));
-    let handler = Handler::new(&mut ctx, !args.light, state_rx)?;
+    let handler = Handler::new(&mut ctx, !args.light, args.windowed, state_rx)?;
     tokio::task::block_in_place(move || ggez::event::run(ctx, evt_loop, handler))
 }
