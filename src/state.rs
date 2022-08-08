@@ -38,6 +38,7 @@ use {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Sequence)]
 enum Mode {
     BinaryTime,
+    CloseWindows,
     HexagesimalTime,
     Logo,
     NewYear,
@@ -52,6 +53,15 @@ impl Mode {
                 let tomorrow = now.date().succ();
                 if tomorrow.month() == 1 && tomorrow.day() == 1 {
                     Some((Priority::Normal, State::BinaryTime(timezone)))
+                } else {
+                    None
+                }
+            }
+            Self::CloseWindows => {
+                let timezone = current_event?.timezone;
+                let now = Utc::now().with_timezone(&timezone);
+                if now.hour() == 22 && now.minute() < 5 {
+                    Some((Priority::Programm, State::CloseWindows(timezone)))
                 } else {
                     None
                 }
@@ -86,6 +96,7 @@ enum Priority {
 #[derive(Debug, Clone)]
 pub(crate) enum State {
     BinaryTime(Tz),
+    CloseWindows(Tz),
     Error(Arc<Error>),
     HexagesimalTime(Tz),
     Logo {

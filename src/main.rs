@@ -151,6 +151,9 @@ impl EventHandler<GameError> for Handler {
                     }
                 }
             }
+            State::CloseWindows(tz) => {
+                TextBox::new(format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", Utc::now().with_timezone(&tz).format("%H:%M:%S"))).draw(self, ctx)?;
+            }
             State::Error(ref e) => {
                 graphics::clear(ctx, Color::RED);
                 TextBox::new(format!("{e}\n\n{e:?}")).color(Color::WHITE).draw(self, ctx)?;
