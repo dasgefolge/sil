@@ -109,7 +109,8 @@ impl TextBox {
         self.text
             .set_font("DejaVu Sans")
             .set_scale(PxScale::from(self.size))
-            .set_bounds([w, h], TextLayout::Wrap { h_align: self.halign, v_align: self.valign })
+            .set_bounds([w, h])
+            .set_layout(TextLayout::Wrap { h_align: self.halign, v_align: self.valign })
             .draw(canvas, DrawParam::default().dest([x, y]));
     }
 }
