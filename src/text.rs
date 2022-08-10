@@ -1,26 +1,17 @@
-use ggez::{
-    Context,
-    GameResult,
-    graphics::{
-        self,
-        Align as HorizontalAlign,
-        Color,
-        DrawParam,
-        Drawable as _,
-        PxScale,
-        Rect,
-        Text,
-        TextFragment,
-        Transform,
-        mint,
-    },
+use ggez::graphics::{
+    Canvas,
+    Color,
+    DrawParam,
+    Drawable as _,
+    PxScale,
+    Rect,
+    Text,
+    TextAlign,
+    TextFragment,
+    TextLayout,
 };
 
-pub(crate) enum VerticalAlign {
-    Top,
-    Middle,
-    Bottom,
-}
+pub(crate) const DEJAVU: &str = "DejaVu Sans";
 
 enum Bounds {
     Default,
@@ -29,10 +20,10 @@ enum Bounds {
 }
 
 impl Bounds {
-    fn to_inner(&self, ctx: &Context, size: f32) -> Rect {
+    fn to_inner(&self, canvas: &Canvas, size: f32) -> Rect {
         match self {
             Self::Default => {
-                let Rect { x, y, w, h } = graphics::screen_coordinates(ctx);
+                let Rect { x, y, w, h } = canvas.screen_coordinates().expect("canvas has screen coordinates");
                 Rect {
                     x: x + size / 2.0,
                     y: y + size / 2.0,
@@ -58,8 +49,8 @@ pub(crate) struct TextBox {
     bounds: Bounds,
     color: Option<Color>,
     size: f32,
-    halign: HorizontalAlign,
-    valign: VerticalAlign,
+    halign: TextAlign,
+    valign: TextAlign,
 }
 
 impl TextBox {
@@ -98,52 +89,28 @@ impl TextBox {
 
     /*
     #[must_use]
-    pub(crate) fn halign(mut self, halign: HorizontalAlign) -> Self {
+    pub(crate) fn halign(mut self, halign: TextAlign) -> Self {
         self.halign = halign;
         self
     }
     */
 
     #[must_use]
-    pub(crate) fn valign(mut self, valign: VerticalAlign) -> Self {
+    pub(crate) fn valign(mut self, valign: TextAlign) -> Self {
         self.valign = valign;
         self
     }
 
-    pub(crate) fn draw(mut self, handler: &crate::Handler, ctx: &mut Context) -> GameResult {
-        let Rect { x, y, w, h } = self.bounds.to_inner(ctx, self.size);
+    pub(crate) fn draw(mut self, handler: &crate::Handler, canvas: &mut Canvas) {
+        let Rect { x, y, w, h } = self.bounds.to_inner(canvas, self.size);
         for fragment in self.text.fragments_mut() {
             fragment.color.get_or_insert(self.color.unwrap_or(handler.fg));
         }
-        self.text.set_font(handler.dejavu_sans, PxScale::from(self.size));
-        self.text.set_bounds([w, h], self.halign);
-        let mut param = DrawParam::default().dest([
-            x,
-            // only handle the y coordinate this way, as the horizontal alignment
-            // automatically takes care of the x coordinate
-            match self.valign {
-                VerticalAlign::Top => y,
-                VerticalAlign::Middle => y + h / 2.0,
-                VerticalAlign::Bottom => y + h,
-            },
-        ]).offset([
-            0.0,
-            // same with the offset
-            match self.valign {
-                VerticalAlign::Top => 0.0,
-                VerticalAlign::Middle => 0.5,
-                VerticalAlign::Bottom => 1.0,
-            },
-        ]);
-        if let Transform::Values { offset, .. } = param.trans {
-            let dim = self.text.dimensions(ctx);
-            let new_offset = mint::Vector2 {
-                x: offset.x * dim.w + dim.x,
-                y: offset.y * dim.h + dim.y,
-            };
-            param = param.offset(new_offset);
-        }
-        self.text.draw(ctx, param)
+        self.text
+            .set_font("DejaVu Sans")
+            .set_scale(PxScale::from(self.size))
+            .set_bounds([w, h], TextLayout::Wrap { h_align: self.halign, v_align: self.valign })
+            .draw(canvas, DrawParam::default().dest([x, y]));
     }
 }
 
@@ -154,8 +121,8 @@ impl Default for TextBox {
             bounds: Bounds::Default,
             color: None,
             size: 100.0,
-            halign: HorizontalAlign::Center,
-            valign: VerticalAlign::Middle,
+            halign: TextAlign::Middle,
+            valign: TextAlign::Middle,
         }
     }
 }

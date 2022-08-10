@@ -14,6 +14,7 @@ use {
         Sequence,
         all,
     },
+    /*
     futures::{
         pin_mut,
         stream::{
@@ -21,14 +22,18 @@ use {
             StreamExt as _,
         },
     },
+    */
     gefolge_websocket::event::Event,
+    ggez::graphics::Image,
     rand::prelude::*,
     tokio::{
+        /*
         fs::{
             self,
             File,
         },
         io::AsyncReadExt as _,
+        */
         sync::mpsc,
         time::sleep,
     },
@@ -101,7 +106,7 @@ pub(crate) enum State {
     HexagesimalTime(Tz),
     Logo {
         msg: &'static str,
-        img: Option<Vec<u8>>,
+        img: Option<Image>,
     },
     NewYear(Tz),
 }
@@ -129,7 +134,8 @@ async fn maintain_inner(mut rng: impl Rng, current_event: Option<Event>, states_
         img: None,
     };
     states_tx.send(state.clone()).await?;
-    if let State::Logo { ref mut img, .. } = state {
+    if let State::Logo { /*ref mut img,*/ .. } = state {
+        /*
         let dirs = stream::iter(xdg_basedir::get_cache_home().into_iter());
         let files = dirs.filter_map(|cfg_dir| async move { File::open(cfg_dir.join("fidera/gefolge.png")).await.ok() });
         pin_mut!(files);
@@ -147,6 +153,7 @@ async fn maintain_inner(mut rng: impl Rng, current_event: Option<Event>, states_
             fs::write(cache_dir.join("gefolge.png"), &buf).await?;
             *img = Some(buf);
         }
+        */ //TODO port to ggez 0.8 (how to create an `Image` from the contents of a PNG file?)
         states_tx.send(state.clone()).await?;
     }
     if rng.gen_bool(0.1) {

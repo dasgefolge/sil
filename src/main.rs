@@ -24,29 +24,27 @@ use {
         GameResult,
         conf::{
             FullscreenType,
-            ModuleConf,
             WindowMode,
             WindowSetup,
         },
         event::EventHandler,
-        filesystem,
         graphics::{
-            self,
+            Canvas,
             Color,
             DrawMode,
             DrawParam,
             Drawable as _,
-            Font,
-            Image,
+            FontData,
+            //Image,
             Mesh,
             Rect,
-            set_mode,
+            TextAlign,
         },
         input::mouse,
         timer,
         winit::dpi::PhysicalSize,
     },
-    image::ImageFormat,
+    //image::ImageFormat,
     rand::prelude::*,
     tokio::sync::mpsc,
     tokio_tungstenite::tungstenite,
@@ -82,7 +80,6 @@ include!(concat!(env!("OUT_DIR"), "/version.rs"));
 struct Handler {
     bg: Color,
     fg: Color,
-    dejavu_sans: Font,
     init: bool,
     state_rx: mpsc::Receiver<State>,
     state: State,
@@ -90,11 +87,11 @@ struct Handler {
 
 impl Handler {
     fn new(ctx: &mut Context, dark: bool, windowed: bool, state_rx: mpsc::Receiver<State>) -> GameResult<Handler> {
+        ctx.gfx.add_font(DEJAVU, FontData::from_path(ctx, DEJAVU_PATH)?);
         Ok(Handler {
             state_rx,
             bg: if dark { Color::BLACK } else { Color::WHITE },
             fg: if dark { Color::WHITE } else { Color::BLACK },
-            dejavu_sans: Font::new(ctx, DEJAVU_PATH)?,
             init: windowed,
             state: State::Logo {
                 msg: "loading the loader",
@@ -106,12 +103,12 @@ impl Handler {
 
 impl EventHandler<GameError> for Handler {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
-        if !self.init && timer::time_since_start(ctx) > StdDuration::from_secs(2) { //HACK wait 2 seconds before going fullscreen to circumvent a potential race condition where `set_mode` can be ignored if called too early
-            if let Some(current_monitor) = graphics::window(&ctx).current_monitor() {
+        if !self.init && ctx.time.time_since_start() > StdDuration::from_secs(2) { //HACK wait 2 seconds before going fullscreen to circumvent a potential race condition where `set_mode` can be ignored if called too early
+            if let Some(current_monitor) = ctx.gfx.window().current_monitor() {
                 let PhysicalSize { width, height } = current_monitor.size();
                 let width = width as f32;
                 let height = height as f32;
-                set_mode(ctx, WindowMode {
+                ctx.gfx.set_mode(WindowMode {
                     width, height,
                     fullscreen_type: FullscreenType::True,
                     ..WindowMode::default()
@@ -120,8 +117,6 @@ impl EventHandler<GameError> for Handler {
             } else {
                 eprintln!("could not go fullscreen, no current monitor");
             }
-            let (w, h) = graphics::drawable_size(ctx);
-            graphics::set_screen_coordinates(ctx, Rect { x: 0.0, y: 0.0, w, h })?;
             self.init = true;
         }
         if let Ok(state) = self.state_rx.try_recv() {
@@ -131,9 +126,9 @@ impl EventHandler<GameError> for Handler {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
-        let (w, h) = graphics::drawable_size(ctx);
-        graphics::set_screen_coordinates(ctx, Rect { x: 0.0, y: 0.0, w, h })?;
-        graphics::clear(ctx, self.bg);
+        let (w, h) = ctx.gfx.drawable_size();
+        let mut canvas = Canvas::from_frame(&ctx.gfx, self.bg);
+        canvas.set_screen_coordinates(Rect { x: 0.0, y: 0.0, w, h });
         match self.state {
             State::BinaryTime(tz) => {
                 let now = Utc::now().with_timezone(&tz);
@@ -144,34 +139,34 @@ impl EventHandler<GameError> for Handler {
                     for x in 0..4 {
                         fract *= 2.0;
                         Mesh::new_rectangle(
-                            ctx,
+                            &ctx.gfx,
                             DrawMode::fill(),
                             Rect { x: x as f32 * bit_width, y: y as f32 * bit_height, w: bit_width, h: bit_height },
                             if fract >= 1.0 { fract -= 1.0; Color::WHITE } else { Color::BLACK },
-                        )?.draw(ctx, DrawParam::default())?;
+                        )?.draw(&mut canvas, DrawParam::default());
                     }
                 }
             }
             State::CloseWindows(tz) => {
-                TextBox::new(format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", Utc::now().with_timezone(&tz).format("%H:%M:%S"))).draw(self, ctx)?;
+                TextBox::new(format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", Utc::now().with_timezone(&tz).format("%H:%M:%S"))).draw(self, &mut canvas);
             }
             State::Error(ref e) => {
-                graphics::clear(ctx, Color::RED);
-                TextBox::new(format!("{e}\n\n{e:?}")).color(Color::WHITE).draw(self, ctx)?;
+                canvas = Canvas::from_frame(&ctx.gfx, Color::RED);
+                canvas.set_screen_coordinates(Rect { x: 0.0, y: 0.0, w, h });
+                TextBox::new(format!("{e}\n\n{e:?}")).color(Color::WHITE).draw(self, &mut canvas);
             }
             State::HexagesimalTime(tz) => {
-                TextBox::new(Utc::now().with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string()).draw(self, ctx)?;
+                TextBox::new(Utc::now().with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string()).draw(self, &mut canvas);
             }
             State::Logo { msg, ref img } => {
-                let coords = graphics::screen_coordinates(ctx);
+                let coords = canvas.screen_coordinates().expect("canvas has screen coordinates");
                 assert_eq!(coords.w, w);
                 assert_eq!(coords.h, h);
                 if let Some(img) = img {
-                    let img = Image::from_bytes_with_format(ctx, &img, ImageFormat::Png)?;
-                    img.draw(ctx, DrawParam::default().dest([w / 2.0, h / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
+                    img.draw(&mut canvas, DrawParam::default().dest([w / 2.0, h / 2.0]).offset([0.5, 0.5])); //TODO resize Gefolge logo on small resolutions
                 }
-                TextBox::new(format!("{w}x{h}, {:.2}FPS", timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
-                TextBox::new(msg).size(24.0).valign(VerticalAlign::Bottom).draw(self, ctx)?;
+                TextBox::new(format!("{w}x{h}, {:.2}FPS", ctx.time.fps())).size(24.0).valign(TextAlign::Begin).draw(self, &mut canvas);
+                TextBox::new(msg).size(24.0).valign(TextAlign::End).draw(self, &mut canvas);
             }
             State::NewYear(tz) => {
                 let now = Utc::now().with_timezone(&tz);
@@ -189,13 +184,13 @@ impl EventHandler<GameError> for Handler {
                         let mins = delta.num_minutes();
                         delta = delta - Duration::minutes(mins);
                         TextBox::new(format!("{hours}:{mins:02}:{:02}", delta.num_seconds())).size(200.0)
-                    }.draw(self, ctx)?;
+                    }.draw(self, &mut canvas);
                 } else {
-                    TextBox::new(now.year().to_string()).size(400.0).draw(self, ctx)?;
+                    TextBox::new(now.year().to_string()).size(400.0).draw(self, &mut canvas);
                 }
             }
         }
-        graphics::present(ctx)?;
+        canvas.finish(&mut ctx.gfx)?;
         timer::yield_now();
         Ok(())
     }
@@ -308,6 +303,8 @@ async fn main(args: Args) -> Result<(), Error> {
             }
         }
     };
+    #[cfg(windows)] let root_path = Path::new("C:\\");
+    #[cfg(not(windows))] let root_path = Path::new("/");
     let (mut ctx, evt_loop) = ContextBuilder::new("sil", "Fenhl")
         .window_setup(WindowSetup {
             title: format!("Gefolge-Silvester-Beamer"),
@@ -317,13 +314,8 @@ async fn main(args: Args) -> Result<(), Error> {
             resizable: true,
             ..WindowMode::default()
         })
-        .modules(ModuleConf {
-            gamepad: false,
-            audio: false,
-        })
+        .add_resource_path(root_path)
         .build()?;
-    #[cfg(windows)] filesystem::mount(&mut ctx, Path::new("C:\\"), true); // for font support
-    #[cfg(not(windows))] filesystem::mount(&mut ctx, Path::new("/"), true); // for font support
     let (state_tx, state_rx) = mpsc::channel(128);
     tokio::task::spawn(state::maintain(SmallRng::from_entropy(), current_event, state_tx));
     let handler = Handler::new(&mut ctx, !args.light, args.windowed, state_rx)?;
