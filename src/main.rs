@@ -165,11 +165,11 @@ impl EventHandler<GameError> for Handler {
                 let coords = graphics::screen_coordinates(ctx);
                 assert_eq!(coords.w, w);
                 assert_eq!(coords.h, h);
-                TextBox::new(format!("{w}x{h}, {:.2}FPS", timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
                 if let Some(img) = img {
                     let img = Image::from_bytes_with_format(ctx, &img, ImageFormat::Png)?;
                     img.draw(ctx, DrawParam::default().dest([w / 2.0, h / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
                 }
+                TextBox::new(format!("{w}x{h}, {:.2}FPS", timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
                 TextBox::new(msg).size(24.0).valign(VerticalAlign::Bottom).draw(self, ctx)?;
             }
             State::NewYear(tz) => {

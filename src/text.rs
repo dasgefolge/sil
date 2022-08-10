@@ -29,9 +29,17 @@ enum Bounds {
 }
 
 impl Bounds {
-    fn to_inner(&self, ctx: &Context, _ /*size*/: f32) -> Rect {
+    fn to_inner(&self, ctx: &Context, size: f32) -> Rect {
         match self {
-            Self::Default => graphics::screen_coordinates(ctx),
+            Self::Default => {
+                let Rect { x, y, w, h } = graphics::screen_coordinates(ctx);
+                Rect {
+                    x: x + size / 2.0,
+                    y: y + size / 2.0,
+                    w: w - size,
+                    h: h - size,
+                }
+            }
             /*
             Self::Inner(rect) => *rect,
             Self::Outer(Rect { x, y, w, h }) => Rect {
@@ -114,8 +122,8 @@ impl TextBox {
             // only handle the y coordinate this way, as the horizontal alignment
             // automatically takes care of the x coordinate
             match self.valign {
-                VerticalAlign::Top => y + h / 2.0,
-                VerticalAlign::Middle => h / 2.0,
+                VerticalAlign::Top => y,
+                VerticalAlign::Middle => y + h / 2.0,
                 VerticalAlign::Bottom => y + h,
             },
         ]).offset([
