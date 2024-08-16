@@ -1,5 +1,3 @@
-#![deny(rust_2018_idioms, unused, unused_crate_dependencies, unused_import_braces, unused_qualifications, warnings)]
-
 use {
     std::{
         collections::HashMap,
@@ -157,7 +155,7 @@ impl DrawCache {
                     let y = i as u32 / width;
                     let row = x * 4 / width;
                     let col = y * 4 / height;
-                    *p = if bit_pattern & (1 << (4 * row + col)) != 0 {
+                    *p = if bit_pattern & (1 << (15 - 4 * col - row)) != 0 {
                         PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("failed to construct premultiplied white")
                     } else {
                         PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("failed to construct premultiplied black")
@@ -331,6 +329,9 @@ struct Args {
     /// Pretend that there's currently an ongoing event for debugging purposes
     #[clap(short, long)]
     mock_event: bool,
+    /// Always display a hardcoded state for debugging purposes
+    #[clap(long, conflicts_with("mock_event"))]
+    mock_state: bool,
     #[clap(long)]
     no_self_update: bool,
     #[clap(short, long)]
@@ -352,30 +353,6 @@ async fn main(args: Args) -> Result<i32, Error> {
         }
     }
     if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(0) } // only start on device startup, not when SSHing in etc
-    let current_event = if args.mock_event {
-        Some(GefolgeEvent {
-            id: format!("mock"),
-            timezone: chrono_tz::Europe::Berlin,
-        })
-    } else {
-        let config = Config::new().await?;
-        let (mut sink, mut stream) = tokio_tungstenite::connect_async(args.ws_url).await?.0.split();
-        config.api_key.write_ws(&mut sink).await?;
-        1u8.write_ws(&mut sink).await?; // session purpose: current event
-        loop {
-            let packet = Packet::read_ws(&mut stream).await?;
-            break match packet {
-                Packet::Ping => continue, //TODO send pong
-                Packet::Error { debug, display } => return Err(Error::Server { debug, display }),
-                Packet::NoEvent => if args.conditional { return Ok(0) } else { None },
-                Packet::CurrentEvent(event) => Some(event),
-                Packet::LatestVersion(commit_hash) => {
-                    update_check(commit_hash).await?;
-                    continue
-                }
-            }
-        }
-    };
     let mut cache = DrawCache {
         dark: !args.light,
         state: State::Logo {
@@ -398,7 +375,35 @@ async fn main(args: Args) -> Result<i32, Error> {
     let event_loop = EventLoop::with_user_event().build()?;
     let mut main_window = None::<(Rc<Window>, softbuffer::Surface<Rc<Window>, Rc<Window>>)>;
     tokio::spawn(state::load_images(event_loop.create_proxy()));
-    tokio::spawn(state::maintain(SmallRng::from_entropy(), current_event, event_loop.create_proxy()));
+    if args.mock_state {
+        cache.state = State::BinaryTime(chrono_tz::Etc::UTC);
+    } else {
+        let current_event = if args.mock_event {
+            Some(GefolgeEvent {
+                id: format!("mock"),
+                timezone: chrono_tz::Europe::Berlin,
+            })
+        } else {
+            let config = Config::new().await?;
+            let (mut sink, mut stream) = tokio_tungstenite::connect_async(args.ws_url).await?.0.split();
+            config.api_key.write_ws(&mut sink).await?;
+            1u8.write_ws(&mut sink).await?; // session purpose: current event
+            loop {
+                let packet = Packet::read_ws(&mut stream).await?;
+                break match packet {
+                    Packet::Ping => continue, //TODO send pong
+                    Packet::Error { debug, display } => return Err(Error::Server { debug, display }),
+                    Packet::NoEvent => if args.conditional { return Ok(0) } else { None },
+                    Packet::CurrentEvent(event) => Some(event),
+                    Packet::LatestVersion(commit_hash) => {
+                        update_check(commit_hash).await?;
+                        continue
+                    }
+                }
+            }
+        };
+        tokio::spawn(state::maintain(SmallRng::from_entropy(), current_event, event_loop.create_proxy()));
+    }
     let (exit_code_tx, mut exit_code_rx) = oneshot::channel();
     let mut exit_code_tx = Some(exit_code_tx);
     #[allow(deprecated)] /*TODO event_loop.run_app*/ let event_loop_result = tokio::task::block_in_place(move || event_loop.run(move |event, target| {
