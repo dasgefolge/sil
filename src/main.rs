@@ -1,74 +1,90 @@
-#![deny(rust_2018_idioms, unused, unused_import_braces, unused_qualifications, warnings)]
+#![deny(rust_2018_idioms, unused, unused_crate_dependencies, unused_import_braces, unused_qualifications, warnings)]
 
 use {
     std::{
+        collections::HashMap,
         env,
         io,
+        num::NonZero,
         path::Path,
-        time::Duration as StdDuration,
+        process,
+        rc::Rc,
+        time::{
+            Duration,
+            Instant,
+        },
     },
     async_proto::Protocol as _,
     chrono::{
-        Duration,
+        TimeDelta,
         prelude::*,
+    },
+    chrono_tz::Tz,
+    fontdue::{
+        Font,
+        FontSettings,
+        layout::{
+            GlyphRasterConfig,
+            VerticalAlign,
+        },
     },
     futures::stream::StreamExt as _,
     gefolge_websocket::event::{
-        Event,
+        Event as GefolgeEvent,
         Delta as Packet,
     },
-    ggez::{
-        Context,
-        ContextBuilder,
-        GameError,
-        GameResult,
-        conf::{
-            FullscreenType,
-            ModuleConf,
-            WindowMode,
-            WindowSetup,
-        },
-        event::EventHandler,
-        filesystem,
-        graphics::{
-            self,
-            Color,
-            DrawMode,
-            DrawParam,
-            Drawable as _,
-            Font,
-            Image,
-            Mesh,
-            Rect,
-            set_mode,
-        },
-        input::mouse,
-        timer,
-        winit::dpi::PhysicalSize,
-    },
-    image::ImageFormat,
+    if_chain::if_chain,
     rand::prelude::*,
-    tokio::sync::mpsc,
+    softbuffer::SoftBufferError,
+    tiny_skia::*,
+    tokio::{
+        sync::{
+            mpsc,
+            oneshot,
+        },
+        time::sleep,
+    },
     tokio_tungstenite::tungstenite,
+    wheel::{
+        fs,
+        traits::LocalResultExt as _,
+    },
+    winit::{
+        dpi::{
+            LogicalSize,
+            PhysicalSize,
+        },
+        event::{
+            Event,
+            StartCause,
+            WindowEvent,
+        },
+        event_loop::{
+            ControlFlow,
+            EventLoop,
+        },
+        window::{
+            Fullscreen,
+            Window,
+        },
+    },
     crate::{
         config::Config,
         state::State,
-        text::*,
     },
 };
 #[cfg(unix)] use {
     std::os::unix::process::CommandExt as _,
     itertools::Itertools as _,
-    tokio::{
-        fs,
-        process::Command,
+    tokio::process::Command,
+    wheel::traits::{
+        AsyncCommandOutputExt as _,
+        IoResultExt as _,
     },
-    wheel::traits::AsyncCommandOutputExt as _,
 };
 
 mod config;
 mod state;
-mod text;
 
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
@@ -79,124 +95,157 @@ include!(concat!(env!("OUT_DIR"), "/version.rs"));
 #[cfg(target_os = "macos")] const DEJAVU_PATH: &str = "/Users/fenhl/Library/Fonts/DejaVuSans.ttf";
 #[cfg(target_os = "windows")] const DEJAVU_PATH: &str = "\\Windows\\Fonts\\DejaVuSans.ttf";
 
-struct Handler {
-    bg: Color,
-    fg: Color,
-    dejavu_sans: Font,
-    init: bool,
-    state_rx: mpsc::Receiver<State>,
+const NIXOS_DEJAVU_PATH: &str = "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf";
+
+trait ControlFlowExt {
+    fn redraw_immediately(&mut self);
+    fn redraw_at(&mut self, new_time: Instant);
+}
+
+impl ControlFlowExt for ControlFlow {
+    fn redraw_immediately(&mut self) {
+        *self = Self::Poll;
+    }
+
+    fn redraw_at(&mut self, new_time: Instant) {
+        match self {
+            ControlFlow::Wait => *self = Self::WaitUntil(new_time),
+            ControlFlow::WaitUntil(prev_time) => *prev_time = (*prev_time).min(new_time),
+            ControlFlow::Poll => {}
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DrawError {
+    #[error(transparent)] Text(#[from] text::Error),
+    #[error(transparent)] TimeFromLocal(#[from] wheel::traits::TimeFromLocalError<DateTime<Tz>>),
+}
+
+struct DrawCache {
+    dark: bool,
     state: State,
+    canvas: Pixmap,
+    redraw_at: ControlFlow,
+    logo: Option<Pixmap>,
+    text_layout: fontdue::layout::Layout,
+    dejavu_sans: Font,
+    glyph_cache: HashMap<(GlyphRasterConfig, [u8; 4]), Pixmap>, // ColorU8 does not implement Eq or Hash
 }
 
-impl Handler {
-    fn new(ctx: &mut Context, dark: bool, windowed: bool, state_rx: mpsc::Receiver<State>) -> GameResult<Handler> {
-        Ok(Handler {
-            state_rx,
-            bg: if dark { Color::BLACK } else { Color::WHITE },
-            fg: if dark { Color::WHITE } else { Color::BLACK },
-            dejavu_sans: Font::new(ctx, DEJAVU_PATH)?,
-            init: windowed,
-            state: State::Logo {
-                msg: "loading the loader",
-                img: None,
-            },
-        })
-    }
-}
-
-impl EventHandler<GameError> for Handler {
-    fn update(&mut self, ctx: &mut Context) -> GameResult {
-        if !self.init && timer::time_since_start(ctx) > StdDuration::from_secs(2) { //HACK wait 2 seconds before going fullscreen to circumvent a potential race condition where `set_mode` can be ignored if called too early
-            if let Some(current_monitor) = graphics::window(&ctx).current_monitor() {
-                let PhysicalSize { width, height } = current_monitor.size();
-                let width = width as f32;
-                let height = height as f32;
-                set_mode(ctx, WindowMode {
-                    width, height,
-                    fullscreen_type: FullscreenType::True,
-                    ..WindowMode::default()
-                })?;
-                mouse::set_cursor_hidden(ctx, true);
-            } else {
-                eprintln!("could not go fullscreen, no current monitor");
-            }
-            let (w, h) = graphics::drawable_size(ctx);
-            graphics::set_screen_coordinates(ctx, Rect { x: 0.0, y: 0.0, w, h })?;
-            self.init = true;
+impl DrawCache {
+    fn draw(&mut self) -> Result<(), DrawError> {
+        self.redraw_at = ControlFlow::Wait;
+        let width = self.canvas.width() as f32;
+        let height = self.canvas.height() as f32;
+        let now_monotonic = Instant::now();
+        let now_utc = Utc::now();
+        #[cfg(debug_assertions)] {
+            println!("{} redrawing for {:?}", now_utc.format("%Y-%m-%d %H:%M:%S"), self.state);
         }
-        if let Ok(state) = self.state_rx.try_recv() {
-            self.state = state;
-        }
-        Ok(())
-    }
-
-    fn draw(&mut self, ctx: &mut Context) -> GameResult {
-        let (w, h) = graphics::drawable_size(ctx);
-        graphics::set_screen_coordinates(ctx, Rect { x: 0.0, y: 0.0, w, h })?;
-        graphics::clear(ctx, self.bg);
+        self.canvas.fill(if self.dark { Color::BLACK } else { Color::WHITE });
         match self.state {
             State::BinaryTime(tz) => {
-                let now = Utc::now().with_timezone(&tz);
-                let mut fract = (now.time() - NaiveTime::from_hms(0, 0, 0)).to_std().expect("nonnegative time of day").as_secs_f32() / 86_400.0;
-                let bit_width = w / 4.0;
-                let bit_height = h / 4.0;
-                for y in 0..4 {
-                    for x in 0..4 {
-                        fract *= 2.0;
-                        Mesh::new_rectangle(
-                            ctx,
-                            DrawMode::fill(),
-                            Rect { x: x as f32 * bit_width, y: y as f32 * bit_height, w: bit_width, h: bit_height },
-                            if fract >= 1.0 { fract -= 1.0; Color::WHITE } else { Color::BLACK },
-                        )?.draw(ctx, DrawParam::default())?;
-                    }
+                self.redraw_at.redraw_immediately();
+                let width = self.canvas.width();
+                let height = self.canvas.height();
+                let now = now_utc.with_timezone(&tz);
+                let bit_pattern = (now.time() - NaiveTime::from_hms_opt(0, 0, 0).expect("invalid hardcoded daytime")).to_std().expect("nonnegative time of day").as_secs_f32() * (65536.0 / 86_400.0);
+                let bit_pattern = bit_pattern.floor() as u16;
+                for (i, p) in self.canvas.pixels_mut().iter_mut().enumerate() {
+                    let x = i as u32 % width;
+                    let y = i as u32 / width;
+                    let row = x * 4 / width;
+                    let col = y * 4 / height;
+                    *p = if bit_pattern & (1 << (4 * row + col)) != 0 {
+                        PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("failed to construct premultiplied white")
+                    } else {
+                        PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("failed to construct premultiplied black")
+                    };
                 }
             }
             State::CloseWindows(tz) => {
-                TextBox::new(format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", Utc::now().with_timezone(&tz).format("%H:%M:%S"))).draw(self, ctx)?;
+                text::Builder::new(&self.dejavu_sans, &format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", now_utc.with_timezone(&tz).format("%H:%M:%S")))
+                    .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                    .size(100.0)
+                    .build(&mut self.text_layout, [width, height])?
+                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
             }
             State::Error(ref e) => {
-                graphics::clear(ctx, Color::RED);
-                TextBox::new(format!("{e}\n\n{e:?}")).color(Color::WHITE).draw(self, ctx)?;
+                self.canvas.fill(Color::from_rgba8(0xff, 0x00, 0x00, 0xff));
+                text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
+                    .color(Color::WHITE)
+                    .size(100.0)
+                    .build(&mut self.text_layout, [width, height])?
+                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
             }
             State::HexagesimalTime(tz) => {
-                TextBox::new(Utc::now().with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string()).draw(self, ctx)?;
+                let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
+                self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into()));
+                text::Builder::new(&self.dejavu_sans, &now_utc.with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string())
+                    .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                    .size(100.0)
+                    .build(&mut self.text_layout, [width, height])?
+                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
             }
-            State::Logo { msg, ref img } => {
-                let coords = graphics::screen_coordinates(ctx);
-                assert_eq!(coords.w, w);
-                assert_eq!(coords.h, h);
-                if let Some(img) = img {
-                    let img = Image::from_bytes_with_format(ctx, &img, ImageFormat::Png)?;
-                    img.draw(ctx, DrawParam::default().dest([w / 2.0, h / 2.0]).offset([0.5, 0.5]))?; //TODO resize Gefolge logo on small resolutions
+            State::Logo { msg } => {
+                if let Some(logo) = &self.logo {
+                    //TODO resize Gefolge logo on small resolutions
+                    self.canvas.draw_pixmap(0, 0, logo.as_ref(), &PixmapPaint::default(), Transform::from_translate((width - logo.width() as f32) / 2.0, (height - logo.height() as f32) / 2.0), None);
                 }
-                TextBox::new(format!("{w}x{h}, {:.2}FPS", timer::fps(ctx))).size(24.0).valign(VerticalAlign::Top).draw(self, ctx)?;
-                TextBox::new(msg).size(24.0).valign(VerticalAlign::Bottom).draw(self, ctx)?;
+                text::Builder::new(&self.dejavu_sans, &format!("{width}x{height}"))
+                    .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                    .size(24.0)
+                    .valign(VerticalAlign::Top)
+                    .build(&mut self.text_layout, [width, height])?
+                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                text::Builder::new(&self.dejavu_sans, msg)
+                    .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                    .size(24.0)
+                    .valign(VerticalAlign::Bottom)
+                    .build(&mut self.text_layout, [width, height])?
+                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
             }
             State::NewYear(tz) => {
-                let now = Utc::now().with_timezone(&tz);
+                let now = now_utc.with_timezone(&tz);
                 if now.month() > 6 {
-                    let mut delta = now.timezone().ymd(now.year() + 1, 1, 1).and_hms(0, 0, 0) - now;
-                    if delta < Duration::minutes(1) {
-                        TextBox::new(delta.num_seconds().to_string()).size(400.0)
-                    } else if delta < Duration::hours(1) {
+                    let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
+                    self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into()));
+                    let mut delta = now.timezone().with_ymd_and_hms(now.year() + 1, 1, 1, 0, 0, 0).single_ok()? - now;
+                    if delta < TimeDelta::minutes(1) {
+                        text::Builder::new(&self.dejavu_sans, &delta.num_seconds().to_string())
+                            .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                            .size(400.0)
+                            .build(&mut self.text_layout, [width, height])?
+                            .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    } else if delta < TimeDelta::hours(1) {
                         let mins = delta.num_minutes();
-                        delta = delta - Duration::minutes(mins);
-                        TextBox::new(format!("{mins}:{:02}", delta.num_seconds())).size(200.0)
+                        delta = delta - TimeDelta::minutes(mins);
+                        text::Builder::new(&self.dejavu_sans, &format!("{mins}:{:02}", delta.num_seconds()))
+                            .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                            .size(200.0)
+                            .build(&mut self.text_layout, [width, height])?
+                            .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     } else {
                         let hours = delta.num_hours();
-                        delta = delta - Duration::hours(hours);
+                        delta = delta - TimeDelta::hours(hours);
                         let mins = delta.num_minutes();
-                        delta = delta - Duration::minutes(mins);
-                        TextBox::new(format!("{hours}:{mins:02}:{:02}", delta.num_seconds())).size(200.0)
-                    }.draw(self, ctx)?;
+                        delta = delta - TimeDelta::minutes(mins);
+                        text::Builder::new(&self.dejavu_sans, &format!("{hours}:{mins:02}:{:02}", delta.num_seconds()))
+                            .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                            .size(200.0)
+                            .build(&mut self.text_layout, [width, height])?
+                            .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    }
                 } else {
-                    TextBox::new(now.year().to_string()).size(400.0).draw(self, ctx)?;
+                    text::Builder::new(&self.dejavu_sans, &now.year().to_string())
+                        .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                        .size(400.0)
+                        .build(&mut self.text_layout, [width, height])?
+                        .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                 }
             }
         }
-        graphics::present(ctx)?;
-        timer::yield_now();
         Ok(())
     }
 }
@@ -207,7 +256,7 @@ fn display_update_error() -> String {
         Ok(current_exe) => current_exe,
         Err(e) => return format!("error determining current exe: {e}"),
     };
-    let e = std::process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
+    let e = process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
     format!("error restarting for update: {e}")
 }
 
@@ -221,16 +270,23 @@ enum Error {
     #[error(transparent)] BaseDir(#[from] xdg_basedir::Error),
     #[error(transparent)] Config(#[from] config::Error),
     #[error(transparent)] Connection(#[from] tungstenite::Error),
-    #[error(transparent)] Game(#[from] GameError),
+    #[error(transparent)] EventLoop(#[from] winit::error::EventLoopError),
+    #[error(transparent)] EventLoopClosed(#[from] winit::event_loop::EventLoopClosed<UserEvent>),
     #[error(transparent)] Io(#[from] io::Error),
+    #[error(transparent)] Png(#[from] png::DecodingError),
     #[error(transparent)] Read(#[from] async_proto::ReadError),
     #[error(transparent)] Reqwest(#[from] reqwest::Error),
     #[error(transparent)] SendState(#[from] mpsc::error::SendError<State>),
+    #[error(transparent)] Task(#[from] tokio::task::JoinError),
     #[error(transparent)] Wheel(#[from] wheel::Error),
     #[error(transparent)] Write(#[from] async_proto::WriteError),
+    #[error("{0}")]
+    Font(&'static str),
+    #[error("failed to create canvas")]
+    Pixmap,
     #[error("{display}")]
     Server {
-        //debug: String,
+        debug: String,
         display: String,
     },
     //HACK use the `Display` impl instead of directly calling `exec` to restart the program to make sure destructors run normally
@@ -250,7 +306,20 @@ async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
     }
 }
 
-#[derive(clap::Parser, wheel::IsVerbose)]
+fn pixmap_to_softbuf<D: raw_window_handle::HasDisplayHandle, W: raw_window_handle::HasWindowHandle>(pixmap: PixmapRef<'_>, mut buffer: softbuffer::Buffer<'_, D, W>) -> Result<(), SoftBufferError> {
+    for (src, target) in pixmap.pixels().iter().zip_eq(&mut *buffer) {
+        *target = (u32::from(src.red()) << 16) | (u32::from(src.green()) << 8) | u32::from(src.blue());
+    }
+    buffer.present() //TODO calculate changed rects and use present_with_damage? (need to keep track of previous coords and sizes of all items)
+}
+
+#[derive(Debug)]
+enum UserEvent {
+    State(State),
+    Logo(Pixmap),
+}
+
+#[derive(clap::Parser)]
 #[clap(version)]
 struct Args {
     /// Exit on startup if there is no current event
@@ -262,9 +331,8 @@ struct Args {
     /// Pretend that there's currently an ongoing event for debugging purposes
     #[clap(short, long)]
     mock_event: bool,
-    /// Include debug info in error exits
-    #[clap(short, long)]
-    verbose: bool,
+    #[clap(long)]
+    no_self_update: bool,
     #[clap(short, long)]
     windowed: bool,
     /// Connect to the specified WebSocket server instead of gefolge.org
@@ -272,20 +340,20 @@ struct Args {
     ws_url: String,
 }
 
-#[wheel::main(verbose_debug)]
-async fn main(args: Args) -> Result<(), Error> {
+#[wheel::main]
+async fn main(args: Args) -> Result<i32, Error> {
+    #[cfg(unix)] let current_exe = env::current_exe().at_unknown()?; // determine at the start of the program, before anything can delete it
     #[cfg(unix)] {
-        let current_exe = env::current_exe()?;
         if current_exe == Path::new(REIWA_BIN_PATH) {
             fs::copy(REIWA_BIN_PATH, BIN_PATH).await?;
-            return Err(std::process::Command::new(BIN_PATH).exec().into())
+            return Err(process::Command::new(BIN_PATH).exec().into())
         } else if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() {
             fs::remove_file(REIWA_BIN_PATH).await?;
         }
     }
-    if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(()) } // only start on device startup, not when SSHing in etc
+    if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(0) } // only start on device startup, not when SSHing in etc
     let current_event = if args.mock_event {
-        Some(Event {
+        Some(GefolgeEvent {
             id: format!("mock"),
             timezone: chrono_tz::Europe::Berlin,
         })
@@ -298,8 +366,8 @@ async fn main(args: Args) -> Result<(), Error> {
             let packet = Packet::read_ws(&mut stream).await?;
             break match packet {
                 Packet::Ping => continue, //TODO send pong
-                Packet::Error { display, .. } => return Err(Error::Server { display }),
-                Packet::NoEvent => if args.conditional { return Ok(()) } else { None },
+                Packet::Error { debug, display } => return Err(Error::Server { debug, display }),
+                Packet::NoEvent => if args.conditional { return Ok(0) } else { None },
                 Packet::CurrentEvent(event) => Some(event),
                 Packet::LatestVersion(commit_hash) => {
                     update_check(commit_hash).await?;
@@ -308,24 +376,157 @@ async fn main(args: Args) -> Result<(), Error> {
             }
         }
     };
-    let (mut ctx, evt_loop) = ContextBuilder::new("sil", "Fenhl")
-        .window_setup(WindowSetup {
-            title: format!("Gefolge-Silvester-Beamer"),
-            ..WindowSetup::default()
-        })
-        .window_mode(WindowMode {
-            resizable: true,
-            ..WindowMode::default()
-        })
-        .modules(ModuleConf {
-            gamepad: false,
-            audio: false,
-        })
-        .build()?;
-    #[cfg(windows)] filesystem::mount(&mut ctx, Path::new("C:\\"), true); // for font support
-    #[cfg(not(windows))] filesystem::mount(&mut ctx, Path::new("/"), true); // for font support
-    let (state_tx, state_rx) = mpsc::channel(128);
-    tokio::task::spawn(state::maintain(SmallRng::from_entropy(), current_event, state_tx));
-    let handler = Handler::new(&mut ctx, !args.light, args.windowed, state_rx)?;
-    tokio::task::block_in_place(move || ggez::event::run(ctx, evt_loop, handler))
+    let mut cache = DrawCache {
+        dark: !args.light,
+        state: State::Logo {
+            msg: "loading the loader",
+        },
+        canvas: Pixmap::new(100, 100).ok_or(Error::Pixmap)?,
+        redraw_at: ControlFlow::Poll,
+        logo: None,
+        text_layout: fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown),
+        dejavu_sans: Font::from_bytes(if fs::exists(NIXOS_DEJAVU_PATH).await? {
+            fs::read(NIXOS_DEJAVU_PATH).await?
+        } else {
+            fs::read(DEJAVU_PATH).await?
+        }, FontSettings {
+            scale: 100.0,
+            ..FontSettings::default()
+        }).map_err(Error::Font)?,
+        glyph_cache: HashMap::default(),
+    };
+    let event_loop = EventLoop::with_user_event().build()?;
+    let mut main_window = None::<(Rc<Window>, softbuffer::Surface<Rc<Window>, Rc<Window>>)>;
+    tokio::spawn(state::load_images(event_loop.create_proxy()));
+    tokio::spawn(state::maintain(SmallRng::from_entropy(), current_event, event_loop.create_proxy()));
+    let (exit_code_tx, mut exit_code_rx) = oneshot::channel();
+    let mut exit_code_tx = Some(exit_code_tx);
+    #[allow(deprecated)] /*TODO event_loop.run_app*/ let event_loop_result = tokio::task::block_in_place(move || event_loop.run(move |event, target| {
+        macro_rules! winit_try {
+            ($res:expr, $msg:literal) => {{
+                match $res {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!("{}: {e} ({e:?})", $msg);
+                        if let Some(exit_code_tx) = exit_code_tx.take() {
+                            let _ = exit_code_tx.send(1);
+                        }
+                        target.exit();
+                        return
+                    }
+                }
+            }};
+        }
+
+        match event {
+            Event::NewEvents(StartCause::ResumeTimeReached { .. } | StartCause::Poll) => if let Some((ref window, _)) = main_window {
+                window.request_redraw();
+            }
+            Event::WindowEvent { event, window_id } => if let Some((ref window, ref mut surface)) = main_window {
+                if window_id == window.id() {
+                    match event {
+                        WindowEvent::CloseRequested => {
+                            target.exit();
+                            return
+                        }
+                        WindowEvent::RedrawRequested => {
+                            let PhysicalSize { width, height } = window.inner_size();
+                            if width != cache.canvas.width() || height != cache.canvas.height() {
+                                match Pixmap::new(width, height) {
+                                    Some(new_canvas) => cache.canvas = new_canvas,
+                                    None => {
+                                        eprintln!("failed to create a new canvas");
+                                        if let Some(exit_code_tx) = exit_code_tx.take() {
+                                            let _ = exit_code_tx.send(1);
+                                        }
+                                        target.exit();
+                                        return
+                                    }
+                                }
+                                if let (Some(width), Some(height)) = (NonZero::new(width), NonZero::new(height)) {
+                                    winit_try!(surface.resize(width, height), "failed to resize the screen buffer");
+                                }
+                            }
+                            winit_try!(cache.draw(), "failed to draw to the canvas");
+                            let buffer = winit_try!(surface.buffer_mut(), "failed to get the screen buffer");
+                            winit_try!(pixmap_to_softbuf(cache.canvas.as_ref(), buffer), "failed to present the screen buffer");
+                        }
+                        _ => {} //TODO handle more events (which?)
+                    }
+                }
+            },
+            Event::UserEvent(event) => {
+                match event {
+                    UserEvent::State(state) => cache.state = state,
+                    UserEvent::Logo(img) => cache.logo = Some(img),
+                }
+                if let Some((ref window, _)) = main_window {
+                    window.request_redraw();
+                }
+            }
+            Event::Resumed => if main_window.is_none() {
+                let mut window_attributes = Window::default_attributes();
+                window_attributes.min_inner_size = Some(winit::dpi::Size::Logical(LogicalSize { width: 100.0, height: 100.0 }));
+                window_attributes.title = format!("Gefolge-Silvester-Beamer");
+                //TODO window_attributes.window_icon
+                let size = if_chain! {
+                    if let Some(monitor) = target.primary_monitor().or_else(|| target.available_monitors().max_by_key(|monitor| (monitor.size().width * monitor.size().height, monitor.refresh_rate_millihertz())));
+                    if let Some(video_mode) = monitor.video_modes().min_by_key(|video_mode| (video_mode.size().width.abs_diff(monitor.size().width) + video_mode.size().height.abs_diff(monitor.size().height), -(video_mode.refresh_rate_millihertz() as i32)));
+                    then {
+                        cache.canvas = winit_try!(Pixmap::new(video_mode.size().width, video_mode.size().height).ok_or(Error::Pixmap), "failed to create new canvas");
+                        let size = (NonZero::new(video_mode.size().width), NonZero::new(video_mode.size().height));
+                        window_attributes.fullscreen = {
+                            #[cfg(target_os = "macos")] { Some(Fullscreen::Borderless(None)) }
+                            #[cfg(not(target_os = "macos"))] { Some(Fullscreen::Exclusive(video_mode)) }
+                        };
+                        size
+                    } else {
+                        (None, None)
+                    }
+                };
+                let window = Rc::new(winit_try!(target.create_window(window_attributes), "failed to create window"));
+                let context = winit_try!(softbuffer::Context::new(window.clone()), "failed to create window context");
+                let mut surface = winit_try!(softbuffer::Surface::new(&context, window.clone()), "failed to create surface");
+                if let (Some(width), Some(height)) = size {
+                    winit_try!(surface.resize(width, height), "failed to resize surface");
+                }
+                if env::var_os("SWAYSOCK").is_some() {
+                    tokio::spawn(async move {
+                        sleep(Duration::from_secs(1)).await;
+                        eprintln!("enabling fullscreen using swaymsg");
+                        match Command::new("swaymsg").arg(format!("[pid={}] focus", process::id())).check("swaymsg").await {
+                            Ok(_) => if let Err(e) = Command::new("swaymsg").arg("fullscreen").arg("enable").check("swaymsg").await {
+                                eprintln!("failed to enable fullscreen using swaymsg: {e} ({e:?})");
+                            },
+                            Err(e) => eprintln!("failed to focus sil using swaymsg: {e} ({e:?})"),
+                        }
+                    });
+                }
+                window.set_cursor_visible(false);
+                main_window = Some((window, surface));
+            },
+            _ => {} //TODO handle more events (which?)
+        }
+        target.set_control_flow(cache.redraw_at);
+    }));
+    /*
+    match exit_code {
+        4813 => {
+            #[cfg(unix)] {
+                let mut cmd = std::process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH });
+                if args.no_self_update {
+                    cmd.arg("--no-self-update");
+                }
+                Err(cmd.exec().into())
+            }
+            #[cfg(not(unix))] compile_error!("relaunch not yet implemented on non-Unix platforms");
+        }
+        code => Ok(code)
+    }
+    */
+    match event_loop_result {
+        Ok(()) => Ok(exit_code_rx.try_recv().unwrap_or_default()),
+        Err(winit::error::EventLoopError::ExitFailure(code)) => Ok(code),
+        Err(e) => Err(e.into()),
+    }
 }
