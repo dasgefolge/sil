@@ -4,7 +4,6 @@ use {
         env,
         io,
         num::NonZero,
-        path::Path,
         process,
         rc::Rc,
         time::{
@@ -32,6 +31,7 @@ use {
         Delta as Packet,
     },
     if_chain::if_chain,
+    itertools::Itertools as _,
     rand::prelude::*,
     softbuffer::SoftBufferError,
     tiny_skia::*,
@@ -40,12 +40,16 @@ use {
             mpsc,
             oneshot,
         },
+        process::Command,
         time::sleep,
     },
     tokio_tungstenite::tungstenite,
     wheel::{
         fs,
-        traits::LocalResultExt as _,
+        traits::{
+            AsyncCommandOutputExt as _,
+            LocalResultExt as _,
+        },
     },
     winit::{
         dpi::{
@@ -72,13 +76,11 @@ use {
     },
 };
 #[cfg(unix)] use {
-    std::os::unix::process::CommandExt as _,
-    itertools::Itertools as _,
-    tokio::process::Command,
-    wheel::traits::{
-        AsyncCommandOutputExt as _,
-        IoResultExt as _,
+    std::{
+        os::unix::process::CommandExt as _,
+        path::Path,
     },
+    wheel::traits::IoResultExt as _,
 };
 
 mod config;

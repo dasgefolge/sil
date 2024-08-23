@@ -1,10 +1,8 @@
 use {
     std::io,
     serde::Deserialize,
-    tokio::{
-        fs::File,
-        io::AsyncReadExt as _,
-    },
+    tokio::io::AsyncReadExt as _,
+    wheel::fs::File,
 };
 #[cfg(unix)] use futures::{
     pin_mut,
@@ -13,10 +11,7 @@ use {
         StreamExt as _,
     },
 };
-#[cfg(windows)] use {
-    directories::ProjectDirs,
-    wheel::traits::IoResultExt as _,
-};
+#[cfg(windows)] use directories::ProjectDirs;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -48,7 +43,7 @@ impl Config {
             }
             #[cfg(windows)] {
                 let config_path = ProjectDirs::from("org", "Gefolge", "sil").ok_or(Error::MissingHomeDir)?.config_dir().join("client-config.json");
-                File::open(&config_path).await.at::<wheel::Error, _>(config_path)?
+                File::open(&config_path).await?
             }
         };
         let mut buf = String::default();
