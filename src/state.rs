@@ -75,7 +75,7 @@ impl Mode {
             Self::NewYear => {
                 let timezone = current_event?.timezone;
                 let now = Utc::now().with_timezone(&timezone);
-                if now.month() == 1 && now.day() == 1 && now.hour() == 1 {
+                if now.month() == 1 && now.day() == 1 && now.hour() == 0 {
                     Some(Priority::Programm)
                 } else {
                     let tomorrow = now.date_naive().succ_opt().expect("date overflow");
