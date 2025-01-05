@@ -146,12 +146,12 @@ impl DrawCache {
         self.canvas.fill(if self.dark { Color::BLACK } else { Color::WHITE });
         match self.state {
             State::BinaryTime(tz) => {
-                self.redraw_at.redraw_immediately();
+                self.redraw_at.redraw_immediately(); //TODO redraw on next image change
                 let width = self.canvas.width();
                 let height = self.canvas.height();
                 let now = now_utc.with_timezone(&tz);
                 let bit_pattern = (now.time() - NaiveTime::from_hms_opt(0, 0, 0).expect("invalid hardcoded daytime")).to_std().expect("nonnegative time of day").as_secs_f32() * (65536.0 / 86_400.0);
-                let bit_pattern = bit_pattern.floor() as u16;
+                let bit_pattern = bit_pattern as u16;
                 for (i, p) in self.canvas.pixels_mut().iter_mut().enumerate() {
                     let x = i as u32 % width;
                     let y = i as u32 / width;
@@ -165,6 +165,8 @@ impl DrawCache {
                 }
             }
             State::CloseWindows(tz) => {
+                let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
+                self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into()));
                 text::Builder::new(&self.dejavu_sans, &format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", now_utc.with_timezone(&tz).format("%H:%M:%S")))
                     .color(if self.dark { Color::WHITE } else { Color::BLACK })
                     .size(100.0)
@@ -238,6 +240,7 @@ impl DrawCache {
                             .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     }
                 } else {
+                    //TODO shrink text on small resolutions to avoid line wrap
                     text::Builder::new(&self.dejavu_sans, &now.year().to_string())
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(400.0)
