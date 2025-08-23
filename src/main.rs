@@ -308,9 +308,15 @@ async fn update_check(allow_self_update: bool, version: Version) -> Result<(), E
         Ok(())
     } else {
         if allow_self_update {
-            #[cfg(unix)] {
-                println!("updating sil from {} to {}", env!("CARGO_PKG_VERSION"), version);
-                Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/main/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
+            #[cfg(feature = "nixos")] {
+                Command::new("nix").arg("flake").arg("update").current_dir("/etc/nixos").check("nix flake update").await?;
+                Command::new("sudo").arg("nixos-rebuild").arg("switch").check("nixos-rebuild").await?;
+            }
+            #[cfg(not(feature = "nixos"))] {
+                #[cfg(unix)] {
+                    println!("updating sil from {} to {}", env!("CARGO_PKG_VERSION"), version);
+                    Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/main/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
+                }
             }
         }
         Err(Error::Update)

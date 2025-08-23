@@ -19,6 +19,9 @@ codegen-units = 1
 lto = true
 strip = true
 
+[features]
+nixos = []
+
 [dependencies]
 async-proto = { version = "0.26", features = ["tokio-tungstenite027"] }
 chrono = { version = "0.4", features = ["serde"] }
