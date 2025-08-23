@@ -11,7 +11,6 @@ use {
             Instant,
         },
     },
-    async_proto::Protocol as _,
     chrono::{
         TimeDelta,
         prelude::*,
@@ -25,14 +24,18 @@ use {
             VerticalAlign,
         },
     },
-    futures::stream::StreamExt as _,
-    gefolge_websocket::event::{
-        Event as GefolgeEvent,
-        Delta as Packet,
+    futures::{
+        sink::SinkExt as _,
+        stream::TryStreamExt as _,
+    },
+    gefolge_web_lib::websocket::{
+        ClientMessageV2,
+        ServerMessageV2,
     },
     if_chain::if_chain,
     itertools::Itertools as _,
     rand::prelude::*,
+    semver::Version,
     softbuffer::SoftBufferError,
     tiny_skia::*,
     tokio::{
@@ -72,7 +75,10 @@ use {
     },
     crate::{
         config::Config,
-        state::State,
+        state::{
+            Event as GefolgeEvent,
+            State,
+        },
     },
 };
 #[cfg(unix)] use {
@@ -85,8 +91,6 @@ use {
 
 mod config;
 mod state;
-
-include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
 #[cfg(unix)] const BIN_PATH: &str = "/home/fenhl/bin/sil";
 #[cfg(unix)] const REIWA_BIN_PATH: &str = "/home/fenhl/bin/sil-reiwa";
@@ -272,7 +276,6 @@ fn display_update_error() -> String {
 enum Error {
     #[error(transparent)] BaseDir(#[from] xdg_basedir::Error),
     #[error(transparent)] Config(#[from] config::Error),
-    #[error(transparent)] Connection(#[from] tungstenite::Error),
     #[error(transparent)] EventLoop(#[from] winit::error::EventLoopError),
     #[error(transparent)] EventLoopClosed(#[from] winit::event_loop::EventLoopClosed<UserEvent>),
     #[error(transparent)] Io(#[from] io::Error),
@@ -281,8 +284,11 @@ enum Error {
     #[error(transparent)] Reqwest(#[from] reqwest::Error),
     #[error(transparent)] SendState(#[from] mpsc::error::SendError<State>),
     #[error(transparent)] Task(#[from] tokio::task::JoinError),
+    #[error(transparent)] Tungstenite(#[from] tungstenite::Error),
     #[error(transparent)] Wheel(#[from] wheel::Error),
     #[error(transparent)] Write(#[from] async_proto::WriteError),
+    #[error("WebSocket stream ended")]
+    EndOfStream,
     #[error("{0}")]
     Font(&'static str),
     #[error("failed to create canvas")]
@@ -297,13 +303,15 @@ enum Error {
     Update,
 }
 
-async fn update_check(commit_hash: [u8; 20]) -> Result<(), Error> {
-    if commit_hash == GIT_COMMIT_HASH {
+async fn update_check(allow_self_update: bool, version: Version) -> Result<(), Error> {
+    if version <= env!("CARGO_PKG_VERSION").parse().expect("failed to parse package version") {
         Ok(())
     } else {
-        #[cfg(unix)] {
-            println!("updating sil from {:02x} to {:02x}", GIT_COMMIT_HASH.into_iter().take(4).format(""), commit_hash.iter().take(4).format(""));
-            Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/master/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
+        if allow_self_update {
+            #[cfg(unix)] {
+                println!("updating sil from {} to {}", env!("CARGO_PKG_VERSION"), version);
+                Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/main/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
+            }
         }
         Err(Error::Update)
     }
@@ -337,17 +345,17 @@ struct Args {
     /// Always display a hardcoded state for debugging purposes
     #[clap(long, conflicts_with("mock_event"))]
     mock_state: bool,
-    #[clap(long)]
+    #[clap(short = 'U', long)]
     no_self_update: bool,
     #[clap(short, long)]
     windowed: bool,
     /// Connect to the specified WebSocket server instead of gefolge.org
-    #[clap(long, default_value = "wss://gefolge.org/api/websocket")]
+    #[clap(long, default_value = "wss://gefolge.org/api/v2/websocket")]
     ws_url: String,
 }
 
 #[wheel::main]
-async fn main(args: Args) -> Result<i32, Error> {
+async fn main(Args { conditional, light, mock_event, mock_state, no_self_update, windowed, ws_url }: Args) -> Result<i32, Error> {
     #[cfg(unix)] let current_exe = env::current_exe().at_unknown()?; // determine at the start of the program, before anything can delete it
     #[cfg(unix)] {
         if current_exe == Path::new(REIWA_BIN_PATH) {
@@ -357,9 +365,9 @@ async fn main(args: Args) -> Result<i32, Error> {
             fs::remove_file(REIWA_BIN_PATH).await?;
         }
     }
-    if args.conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(0) } // only start on device startup, not when SSHing in etc
+    if conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(0) } // only start on device startup, not when SSHing in etc
     let mut cache = DrawCache {
-        dark: !args.light,
+        dark: !light,
         state: State::Logo {
             msg: "loading the loader",
         },
@@ -380,28 +388,28 @@ async fn main(args: Args) -> Result<i32, Error> {
     let event_loop = EventLoop::with_user_event().build()?;
     let mut main_window = None::<(Rc<Window>, softbuffer::Surface<Rc<Window>, Rc<Window>>)>;
     tokio::spawn(state::load_images(event_loop.create_proxy()));
-    if args.mock_state {
+    if mock_state {
         cache.state = State::BinaryTime(chrono_tz::Etc::UTC);
     } else {
-        let current_event = if args.mock_event {
+        let current_event = if mock_event {
             Some(GefolgeEvent {
-                id: format!("mock"),
                 timezone: chrono_tz::Europe::Berlin,
             })
         } else {
             let config = Config::new().await?;
-            let (mut sink, mut stream) = tokio_tungstenite::connect_async(args.ws_url).await?.0.split();
-            config.api_key.write_ws(&mut sink).await?;
-            1u8.write_ws(&mut sink).await?; // session purpose: current event
+            let (mut sink, mut stream) = async_proto::websocket027(ws_url).await?;
+            sink.send(ClientMessageV2::Auth {
+                api_key: config.api_key,
+            }).await?;
+            sink.send(ClientMessageV2::CurrentEvent).await?;
             loop {
-                let packet = Packet::read_ws(&mut stream).await?;
-                break match packet {
-                    Packet::Ping => continue, //TODO send pong
-                    Packet::Error { debug, display } => return Err(Error::Server { debug, display }),
-                    Packet::NoEvent => if args.conditional { return Ok(0) } else { None },
-                    Packet::CurrentEvent(event) => Some(event),
-                    Packet::LatestVersion(commit_hash) => {
-                        update_check(commit_hash).await?;
+                break match stream.try_next().await?.ok_or(Error::EndOfStream)? {
+                    ServerMessageV2::Ping => continue, //TODO send pong
+                    ServerMessageV2::Error { debug, display } => return Err(Error::Server { debug, display }),
+                    ServerMessageV2::NoEvent => if conditional { return Ok(0) } else { None },
+                    ServerMessageV2::CurrentEvent { id: _, timezone } => Some(GefolgeEvent { timezone }),
+                    ServerMessageV2::LatestSilVersion(version) => {
+                        update_check(!no_self_update, version).await?;
                         continue
                     }
                 }
@@ -485,10 +493,12 @@ async fn main(args: Args) -> Result<i32, Error> {
                     then {
                         cache.canvas = winit_try!(Pixmap::new(video_mode.size().width, video_mode.size().height).ok_or(Error::Pixmap), "failed to create new canvas");
                         let size = (NonZero::new(video_mode.size().width), NonZero::new(video_mode.size().height));
-                        window_attributes.fullscreen = {
-                            #[cfg(target_os = "macos")] { Some(Fullscreen::Borderless(None)) }
-                            #[cfg(not(target_os = "macos"))] { Some(Fullscreen::Exclusive(video_mode)) }
-                        };
+                        if !windowed {
+                            window_attributes.fullscreen = {
+                                #[cfg(target_os = "macos")] { Some(Fullscreen::Borderless(None)) }
+                                #[cfg(not(target_os = "macos"))] { Some(Fullscreen::Exclusive(video_mode)) }
+                            };
+                        }
                         size
                     } else {
                         (None, None)

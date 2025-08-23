@@ -21,7 +21,6 @@ use {
             StreamExt as _,
         },
     },
-    gefolge_websocket::event::Event,
     rand::prelude::*,
     tiny_skia::Pixmap,
     tokio::{
@@ -38,6 +37,10 @@ use {
         UserEvent,
     },
 };
+
+pub(crate) struct Event {
+    pub(crate) timezone: Tz,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Sequence)]
 enum Mode {
