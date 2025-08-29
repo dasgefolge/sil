@@ -30,7 +30,7 @@ clap = { version = "4", features = ["derive"] }
 enum-iterator = "1"
 fontdue = "0.9"
 futures = "0.3"
-gefolge-web-lib = { git = "https://github.com/dasgefolge/gefolge.org", branch = "main", version = "2.0.0" }
+gefolge-web-lib = { git = "https://github.com/dasgefolge/gefolge.org", branch = "main" }
 if_chain = "1"
 itertools = "0.10"
 png = "0.17"
@@ -48,7 +48,7 @@ tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread
 tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 wheel = { git = "https://github.com/fenhl/wheel", branch = "main", features = ["chrono"] }
 winit = "0.30"
-xdg-basedir = "1"
+xdg-basedir = "1" #TODO replace with xdg or etcetera crate
 
 [target.'cfg(windows)'.dependencies]
 directories = "4"

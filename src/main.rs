@@ -24,18 +24,9 @@ use {
             VerticalAlign,
         },
     },
-    futures::{
-        sink::SinkExt as _,
-        stream::TryStreamExt as _,
-    },
-    gefolge_web_lib::websocket::{
-        ClientMessageV2,
-        ServerMessageV2,
-    },
     if_chain::if_chain,
     itertools::Itertools as _,
     rand::prelude::*,
-    semver::Version,
     softbuffer::SoftBufferError,
     tiny_skia::*,
     tokio::{
@@ -73,13 +64,7 @@ use {
             Window,
         },
     },
-    crate::{
-        config::Config,
-        state::{
-            Event as GefolgeEvent,
-            State,
-        },
-    },
+    crate::state::State,
 };
 #[cfg(unix)] use {
     std::{
@@ -303,26 +288,6 @@ enum Error {
     Update,
 }
 
-async fn update_check(allow_self_update: bool, version: Version) -> Result<(), Error> {
-    if version <= env!("CARGO_PKG_VERSION").parse().expect("failed to parse package version") {
-        Ok(())
-    } else {
-        if allow_self_update {
-            #[cfg(feature = "nixos")] {
-                Command::new("nix").arg("flake").arg("update").current_dir("/etc/nixos").check("nix flake update").await?;
-                Command::new("sudo").arg("nixos-rebuild").arg("switch").check("nixos-rebuild").await?;
-            }
-            #[cfg(not(feature = "nixos"))] {
-                #[cfg(unix)] {
-                    println!("updating sil from {} to {}", env!("CARGO_PKG_VERSION"), version);
-                    Command::new("scp").arg("reiwa:/opt/git/github.com/dasgefolge/sil/main/target/release/sil").arg(REIWA_BIN_PATH).check("scp").await?;
-                }
-            }
-        }
-        Err(Error::Update)
-    }
-}
-
 fn pixmap_to_softbuf<D: raw_window_handle::HasDisplayHandle, W: raw_window_handle::HasWindowHandle>(pixmap: PixmapRef<'_>, mut buffer: softbuffer::Buffer<'_, D, W>) -> Result<(), SoftBufferError> {
     for (src, target) in pixmap.pixels().iter().zip_eq(&mut *buffer) {
         *target = (u32::from(src.red()) << 16) | (u32::from(src.green()) << 8) | u32::from(src.blue());
@@ -339,9 +304,6 @@ enum UserEvent {
 #[derive(clap::Parser)]
 #[clap(version)]
 struct Args {
-    /// Exit on startup if there is no current event
-    #[clap(long)]
-    conditional: bool,
     /// Use a light theme with mostly white backgrounds and black text
     #[clap(short, long)]
     light: bool,
@@ -361,7 +323,7 @@ struct Args {
 }
 
 #[wheel::main]
-async fn main(Args { conditional, light, mock_event, mock_state, no_self_update, windowed, ws_url }: Args) -> Result<i32, Error> {
+async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws_url }: Args) -> Result<i32, Error> {
     #[cfg(unix)] let current_exe = env::current_exe().at_unknown()?; // determine at the start of the program, before anything can delete it
     #[cfg(unix)] {
         if current_exe == Path::new(REIWA_BIN_PATH) {
@@ -371,7 +333,6 @@ async fn main(Args { conditional, light, mock_event, mock_state, no_self_update,
             fs::remove_file(REIWA_BIN_PATH).await?;
         }
     }
-    if conditional && (env::var_os("STY").is_some() || env::var_os("SSH_CLIENT").is_some() || env::var_os("SSH_TTY").is_some()) { return Ok(0) } // only start on device startup, not when SSHing in etc
     let mut cache = DrawCache {
         dark: !light,
         state: State::Logo {
@@ -393,35 +354,10 @@ async fn main(Args { conditional, light, mock_event, mock_state, no_self_update,
     };
     let event_loop = EventLoop::with_user_event().build()?;
     let mut main_window = None::<(Rc<Window>, softbuffer::Surface<Rc<Window>, Rc<Window>>)>;
-    tokio::spawn(state::load_images(event_loop.create_proxy()));
     if mock_state {
         cache.state = State::BinaryTime(chrono_tz::Etc::UTC);
     } else {
-        let current_event = if mock_event {
-            Some(GefolgeEvent {
-                timezone: chrono_tz::Europe::Berlin,
-            })
-        } else {
-            let config = Config::new().await?;
-            let (mut sink, mut stream) = async_proto::websocket027(ws_url).await?;
-            sink.send(ClientMessageV2::Auth {
-                api_key: config.api_key,
-            }).await?;
-            sink.send(ClientMessageV2::CurrentEvent).await?;
-            loop {
-                break match stream.try_next().await?.ok_or(Error::EndOfStream)? {
-                    ServerMessageV2::Ping => continue, //TODO send pong
-                    ServerMessageV2::Error { debug, display } => return Err(Error::Server { debug, display }),
-                    ServerMessageV2::NoEvent => if conditional { return Ok(0) } else { None },
-                    ServerMessageV2::CurrentEvent { id: _, timezone } => Some(GefolgeEvent { timezone }),
-                    ServerMessageV2::LatestSilVersion(version) => {
-                        update_check(!no_self_update, version).await?;
-                        continue
-                    }
-                }
-            }
-        };
-        tokio::spawn(state::maintain(SmallRng::from_entropy(), current_event, event_loop.create_proxy()));
+        tokio::spawn(state::maintain(SmallRng::from_entropy(), mock_event, !no_self_update, ws_url, event_loop.create_proxy()));
     }
     let (exit_code_tx, mut exit_code_rx) = oneshot::channel();
     let mut exit_code_tx = Some(exit_code_tx);
