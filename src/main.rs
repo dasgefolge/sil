@@ -73,6 +73,7 @@ use {
     },
     wheel::traits::IoResultExt as _,
 };
+#[cfg(all(not(feature = "nixos"), unix))] use std::sync::Arc;
 
 mod config;
 mod state;
@@ -242,21 +243,6 @@ impl DrawCache {
     }
 }
 
-#[cfg(unix)]
-fn display_update_error() -> String {
-    let current_exe = match env::current_exe() {
-        Ok(current_exe) => current_exe,
-        Err(e) => return format!("error determining current exe: {e}"),
-    };
-    let e = process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
-    format!("error restarting for update: {e}")
-}
-
-#[cfg(windows)]
-fn display_update_error() -> String {
-    format!("please update sil")
-}
-
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error(transparent)] BaseDir(#[from] xdg_basedir::Error),
@@ -283,9 +269,6 @@ enum Error {
         debug: String,
         display: String,
     },
-    //HACK use the `Display` impl instead of directly calling `exec` to restart the program to make sure destructors run normally
-    #[error("{}", display_update_error())]
-    Update,
 }
 
 fn pixmap_to_softbuf<D: raw_window_handle::HasDisplayHandle, W: raw_window_handle::HasWindowHandle>(pixmap: PixmapRef<'_>, mut buffer: softbuffer::Buffer<'_, D, W>) -> Result<(), SoftBufferError> {
@@ -299,6 +282,7 @@ fn pixmap_to_softbuf<D: raw_window_handle::HasDisplayHandle, W: raw_window_handl
 enum UserEvent {
     State(State),
     Logo(Pixmap),
+    UpdateDone,
 }
 
 #[derive(clap::Parser)]
@@ -419,6 +403,23 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
                 match event {
                     UserEvent::State(state) => cache.state = state,
                     UserEvent::Logo(img) => cache.logo = Some(img),
+                    UserEvent::UpdateDone => {
+                        #[cfg(feature = "nixos")] {
+                            if let Some(exit_code_tx) = exit_code_tx.take() {
+                                let _ = exit_code_tx.send(13);
+                            }
+                            target.exit();
+                        }
+                        #[cfg(not(feature = "nixos"))] {
+                            #[cfg(unix)] {
+                                let e = process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
+                                cache.state = State::Error(Arc::new(e.into()));
+                            }
+                            #[cfg(not(unix))] {
+                                cache.state = State::Logo { msg: "restart to update" };
+                            }
+                        }
+                    }
                 }
                 if let Some((ref window, _)) = main_window {
                     window.request_redraw();
@@ -471,21 +472,6 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
         }
         target.set_control_flow(cache.redraw_at);
     }));
-    /*
-    match exit_code {
-        4813 => {
-            #[cfg(unix)] {
-                let mut cmd = std::process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH });
-                if args.no_self_update {
-                    cmd.arg("--no-self-update");
-                }
-                Err(cmd.exec().into())
-            }
-            #[cfg(not(unix))] compile_error!("relaunch not yet implemented on non-Unix platforms");
-        }
-        code => Ok(code)
-    }
-    */
     match event_loop_result {
         Ok(()) => Ok(exit_code_rx.try_recv().unwrap_or_default()),
         Err(winit::error::EventLoopError::ExitFailure(code)) => Ok(code),

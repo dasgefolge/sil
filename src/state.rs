@@ -169,8 +169,8 @@ async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: b
                 }
             }
         }
-        tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "restart to update" })))?;
-        Err(Error::Update)
+        tokio::task::block_in_place(|| states_tx.send_event(UserEvent::UpdateDone))?;
+        Ok(())
     }
 }
 
