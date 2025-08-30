@@ -245,7 +245,6 @@ impl DrawCache {
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
-    #[error(transparent)] BaseDir(#[from] xdg_basedir::Error),
     #[error(transparent)] Config(#[from] config::Error),
     #[error(transparent)] EventLoop(#[from] winit::error::EventLoopError),
     #[error(transparent)] EventLoopClosed(#[from] winit::event_loop::EventLoopClosed<UserEvent>),
@@ -262,6 +261,9 @@ enum Error {
     EndOfStream,
     #[error("{0}")]
     Font(&'static str),
+    #[cfg(windows)]
+    #[error("user folder not found")]
+    MissingHomeDir,
     #[error("failed to create canvas")]
     Pixmap,
     #[error("{display}")]
@@ -317,6 +319,11 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
             fs::remove_file(REIWA_BIN_PATH).await?;
         }
     }
+    let http_client = reqwest::Client::builder()
+        .user_agent(concat!("sil/", env!("CARGO_PKG_VERSION"), " (https://github.com/dasgefolge/sil)"))
+        .use_rustls_tls()
+        .https_only(true)
+        .build()?;
     let mut cache = DrawCache {
         dark: !light,
         state: State::Logo {
@@ -341,7 +348,7 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
     if mock_state {
         cache.state = State::BinaryTime(chrono_tz::Etc::UTC);
     } else {
-        tokio::spawn(state::maintain(SmallRng::from_entropy(), mock_event, !no_self_update, ws_url, event_loop.create_proxy()));
+        tokio::spawn(state::maintain(SmallRng::from_entropy(), http_client, mock_event, !no_self_update, ws_url, event_loop.create_proxy()));
     }
     let (exit_code_tx, mut exit_code_rx) = oneshot::channel();
     let mut exit_code_tx = Some(exit_code_tx);

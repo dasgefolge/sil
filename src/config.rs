@@ -1,23 +1,13 @@
 use {
-    std::io,
     serde::Deserialize,
-    tokio::io::AsyncReadExt as _,
-    wheel::fs::File,
+    wheel::fs,
 };
-#[cfg(unix)] use futures::{
-    pin_mut,
-    stream::{
-        self,
-        StreamExt as _,
-    },
-};
+#[cfg(unix)] use xdg::BaseDirectories;
 #[cfg(windows)] use directories::ProjectDirs;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error(transparent)] Io(#[from] io::Error),
-    #[error(transparent)] Json(#[from] serde_json::Error),
-    #[cfg(windows)] #[error(transparent)] Wheel(#[from] wheel::Error),
+    #[error(transparent)] Wheel(#[from] wheel::Error),
     #[cfg(unix)]
     #[error("config file missing, create at $XDG_CONFIG_DIRS/fidera/client-config.json")]
     MissingConfig,
@@ -33,21 +23,16 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub(crate) async fn new() -> Result<Config, Error> {
-        let mut file = {
-            #[cfg(unix)] {
-                let dirs = stream::iter(xdg_basedir::get_config_home().into_iter().chain(xdg_basedir::get_config_dirs()));
-                let files = dirs.filter_map(|cfg_dir| async move { File::open(cfg_dir.join("fidera/client-config.json")).await.ok() });
-                pin_mut!(files);
-                files.next().await.ok_or(Error::MissingConfig)?
+    pub(crate) async fn load() -> Result<Config, Error> {
+        #[cfg(unix)] {
+            if let Some(config_path) = BaseDirectories::new().find_config_file("fidera/client-config.json") {
+                Ok(fs::read_json(config_path).await?)
+            } else {
+                Err(Error::MissingConfig)
             }
-            #[cfg(windows)] {
-                let config_path = ProjectDirs::from("org", "Gefolge", "sil").ok_or(Error::MissingHomeDir)?.config_dir().join("client-config.json");
-                File::open(&config_path).await?
-            }
-        };
-        let mut buf = String::default();
-        file.read_to_string(&mut buf).await?;
-        Ok(serde_json::from_str(&buf)?) //TODO use async-json instead
+        }
+        #[cfg(windows)] {
+            Ok(fs::read_json(ProjectDirs::from("org", "Gefolge", "sil").ok_or(Error::MissingHomeDir)?.config_dir().join("client-config.json")).await?)
+        }
     }
 }

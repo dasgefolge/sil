@@ -1,6 +1,6 @@
 [package]
 name = "sil"
-version = "2.0.2"
+version = "2.0.3"
 authors = ["Fenhl <fenhl@fenhl.net>"]
 edition = "2021"
 
@@ -36,19 +36,20 @@ itertools = "0.10"
 png = "0.17"
 rand = { version = "0.8", default-features = false, features = ["small_rng"] }
 raw-window-handle = "0.6.0"
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "macos-system-configuration", "rustls-tls", "json"] }
 semver = "1.0.26"
 serde = { version = "1", features = ["derive"] }
-serde_json = { package = "serde_json_path_to_error", version = "0.1" }
 softbuffer = "0.4"
 text = { git = "https://github.com/fenhl/text", branch = "main" }
 thiserror = "1"
 tiny-skia = "0.11"
 tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-wheel = { git = "https://github.com/fenhl/wheel", branch = "main", features = ["chrono"] }
+wheel = { git = "https://github.com/fenhl/wheel", branch = "main", features = ["chrono", "reqwest", "serde_json"] }
 winit = "0.30"
-xdg-basedir = "1" #TODO replace with xdg or etcetera crate
 
 [target.'cfg(windows)'.dependencies]
 directories = "4"
+
+[target."cfg(unix)".dependencies]
+xdg = "3"

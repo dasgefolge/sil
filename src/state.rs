@@ -31,10 +31,6 @@ use {
     semver::Version,
     tiny_skia::Pixmap,
     tokio::{
-        fs::{
-            self,
-            File,
-        },
         io::AsyncReadExt as _,
         select,
         time::{
@@ -43,6 +39,13 @@ use {
             sleep,
         },
     },
+    wheel::{
+        fs::{
+            self,
+            File,
+        },
+        traits::ReqwestResponseExt as _,
+    },
     winit::event_loop::EventLoopProxy,
     crate::{
         Error,
@@ -50,6 +53,8 @@ use {
         config::Config,
     },
 };
+#[cfg(unix)] use xdg::BaseDirectories;
+#[cfg(windows)] use directories::ProjectDirs;
 #[cfg(any(feature = "nixos", unix))] use {
     tokio::process::Command,
     wheel::traits::AsyncCommandOutputExt as _,
@@ -130,23 +135,40 @@ pub(crate) enum State {
     NewYear(Tz),
 }
 
-async fn load_images_inner(states_tx: EventLoopProxy<UserEvent>) -> Result<(), Error> {
-    let dirs = stream::iter(xdg_basedir::get_cache_home().into_iter());
-    let mut files = pin!(dirs.filter_map(|cfg_dir| async move { File::open(cfg_dir.join("fidera/gefolge.png")).await.ok() }));
-    if let Some(mut file) = files.next().await {
+async fn load_images_inner(http_client: &reqwest::Client, states_tx: EventLoopProxy<UserEvent>) -> Result<(), Error> {
+    if let Some(mut file) = {
+        #[cfg(unix)] {
+            pin!(
+                stream::iter(BaseDirectories::new().find_cache_file("fidera/gefolge.png"))
+                    .filter_map(|path| async move { File::open(path).await.ok() })
+            ).next().await
+        }
+        #[cfg(windows)] {
+            pin!(
+                fs::read_dir(ProjectDirs::from("org", "Gefolge", "sil").ok_or(Error::MissingHomeDir)?.cache_dir())
+                    .filter_map(|res| async move { File::open(res.ok()?.path()).await.ok() })
+            ).next().await
+        }
+    } {
         let mut buf = Vec::default();
         file.read_to_end(&mut buf).await?;
         tokio::task::block_in_place(|| Ok::<_, Error>(states_tx.send_event(UserEvent::Logo(Pixmap::decode_png(&buf)?))?))?;
     } else {
-        let cache_dir = xdg_basedir::get_cache_home()?.join("fidera");
-        fs::create_dir_all(&cache_dir).await?;
-        let buf = reqwest::get("https://gefolge.org/static/gefolge.png").await?
-            .error_for_status()?
-            .bytes().await?
-            .to_vec();
-        fs::write(cache_dir.join("gefolge.png"), &buf).await?;
-        tokio::task::block_in_place(|| Ok::<_, Error>(states_tx.send_event(UserEvent::Logo(Pixmap::decode_png(&buf)?))?))?;
-    }
+        let cache_path = {
+            #[cfg(unix)] {
+                BaseDirectories::new().place_cache_file("fidera/gefolge.png")?
+            }
+            #[cfg(windows)] {
+                ProjectDirs::from("org", "Gefolge", "sil").ok_or(Error::MissingHomeDir)?.cache_dir().join("gefolge.png")
+            }
+        };
+        fs::create_dir_all(cache_path.parent().expect("attempted to create file at filesystem root")).await?;
+        http_client.get("https://gefolge.org/static/gefolge.png")
+            .send().await?
+            .detailed_error_for_status().await?
+            .download(&cache_path).await?;
+        tokio::task::block_in_place(|| Ok::<_, Error>(states_tx.send_event(UserEvent::Logo(Pixmap::load_png(cache_path)?))?))?;
+    };
     Ok(())
 }
 
@@ -174,9 +196,9 @@ async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: b
     }
 }
 
-async fn maintain_inner(mut rng: impl Rng + Send, mock_event: bool, allow_self_update: bool, ws_url: String, states_tx: EventLoopProxy<UserEvent>) -> Result<Never, Error> {
+async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client, mock_event: bool, allow_self_update: bool, ws_url: String, states_tx: EventLoopProxy<UserEvent>) -> Result<Never, Error> {
     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "loading Gefolge logo" })))?;
-    load_images_inner(states_tx.clone()).await?;
+    load_images_inner(http_client, states_tx.clone()).await?;
     if rng.gen_bool(0.1) {
         tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "reticulating splines" })))?;
         sleep(StdDuration::from_secs_f64(rng.gen_range(0.5..1.5))).await;
@@ -190,7 +212,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, mock_event: bool, allow_self_u
             }),
         )
     } else {
-        let config = Config::new().await?;
+        let config = Config::load().await?;
         let (mut sink, mut stream) = async_proto::websocket027(ws_url).await?;
         sink.send(ClientMessageV2::Auth {
             api_key: config.api_key,
@@ -243,8 +265,8 @@ async fn maintain_inner(mut rng: impl Rng + Send, mock_event: bool, allow_self_u
     }
 }
 
-pub(crate) async fn maintain(rng: impl Rng + Send, mock_event: bool, allow_self_update: bool, ws_url: String, states_tx: EventLoopProxy<UserEvent>) {
-    match maintain_inner(rng, mock_event, allow_self_update, ws_url, states_tx.clone()).await {
+pub(crate) async fn maintain(rng: impl Rng + Send, http_client: reqwest::Client, mock_event: bool, allow_self_update: bool, ws_url: String, states_tx: EventLoopProxy<UserEvent>) {
+    match maintain_inner(rng, &http_client, mock_event, allow_self_update, ws_url, states_tx.clone()).await {
         Ok(never) => match never {},
         Err(e) => { let _ = tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Error(Arc::new(e))))); }
     }

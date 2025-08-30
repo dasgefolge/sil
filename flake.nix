@@ -1,18 +1,16 @@
 {
     inputs = {
-        # a better way of using the latest stable version of nixpkgs
-        # without specifying specific release
-        nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/*.tar.gz";
+        nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # requires Rust 1.87 or higher (https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/#precise-capturing-use-in-impl-trait-in-trait-definitions)
     };
-    outputs = { self, nixpkgs }: let
+    outputs = { self, nixpkgs-unstable }: let
         supportedSystems = [
             "aarch64-darwin"
             "aarch64-linux"
             "x86_64-darwin"
             "x86_64-linux"
         ];
-        forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
-            pkgs = import nixpkgs { inherit system; };
+        forEachSupportedSystem = f: nixpkgs-unstable.lib.genAttrs supportedSystems (system: f {
+            pkgs = import nixpkgs-unstable { inherit system; };
         });
     in {
         packages = forEachSupportedSystem ({ pkgs, ... }: let
