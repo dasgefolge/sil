@@ -2395,6 +2395,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "nonempty-collections"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3761f83543b22e36b7ea1145309acf9c251ef67dd8b186047f85d8cc985272d4"
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3028,7 +3034,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.31",
- "socket2 0.5.10",
+ "socket2 0.6.0",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
@@ -3065,9 +3071,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.0",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3898,7 +3904,7 @@ dependencies = [
 
 [[package]]
 name = "sil"
-version = "2.0.4"
+version = "2.1.0"
 dependencies = [
  "async-proto",
  "chrono",
@@ -3911,6 +3917,7 @@ dependencies = [
  "gefolge-web-lib",
  "if_chain",
  "itertools 0.10.5",
+ "nonempty-collections",
  "png",
  "rand 0.8.5",
  "raw-window-handle",

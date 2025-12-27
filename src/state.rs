@@ -23,12 +23,17 @@ use {
             StreamExt as _,
         },
     },
-    gefolge_web_lib::websocket::{
-        ClientMessageV2,
-        ServerMessageV2,
+    gefolge_web_lib::{
+        time::MaybeAwareDateTime,
+        websocket::{
+            ClientMessageV2,
+            ServerMessageV2,
+        },
     },
+    nonempty_collections::NEVec,
     rand::prelude::*,
     semver::Version,
+    serde::Deserialize,
     tiny_skia::Pixmap,
     tokio::{
         io::AsyncReadExt as _,
@@ -61,8 +66,19 @@ use {
 };
 #[cfg(all(not(feature = "nixos"), unix))] use crate::REIWA_BIN_PATH;
 
-pub(crate) struct Event {
-    pub(crate) timezone: Tz,
+struct Event {
+    id: String,
+    calendar_events: Vec<CalEvent>,
+    timezone: Tz,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CalEvent {
+    pub(crate) start: MaybeAwareDateTime,
+    pub(crate) end: MaybeAwareDateTime,
+    pub(crate) text: String,
+    pub(crate) ib_subtitle: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Sequence)]
@@ -72,6 +88,7 @@ enum Mode {
     HexagesimalTime,
     Logo,
     NewYear,
+    Schedule,
 }
 
 impl Mode {
@@ -112,6 +129,16 @@ impl Mode {
                     })
                 }.map(|priority| (priority, State::NewYear(timezone)))
             }
+            Self::Schedule => {
+                let Event { id, calendar_events, timezone, .. } = current_event?;
+                let now = Utc::now().with_timezone(timezone);
+                let schedule = calendar_events.iter()
+                    .filter(|cal_event| cal_event.end.to_maybe_local(Some(*timezone)).is_ok_and(|end| end > now))
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                NEVec::try_from_vec(schedule).map(|schedule| (Priority::Normal, State::Schedule { use_weekdays: !id.starts_with("sil"), tz: *timezone, schedule }))
+            }
         }
     }
 }
@@ -133,6 +160,11 @@ pub(crate) enum State {
         msg: &'static str,
     },
     NewYear(Tz),
+    Schedule {
+        use_weekdays: bool,
+        tz: Tz,
+        schedule: NEVec<CalEvent>,
+    },
 }
 
 async fn load_images_inner(http_client: &reqwest::Client, states_tx: EventLoopProxy<UserEvent>) -> Result<(), Error> {
@@ -197,6 +229,12 @@ async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: b
 }
 
 async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client, mock_event: bool, allow_self_update: bool, ws_url: String, states_tx: EventLoopProxy<UserEvent>) -> Result<Never, Error> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyEventData {
+        calendar_events: Vec<CalEvent>,
+    }
+
     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "loading Gefolge logo" })))?;
     load_images_inner(http_client, states_tx.clone()).await?;
     if rng.gen_bool(0.1) {
@@ -208,6 +246,8 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
         (
             Either::Left(stream::pending::<Result<ServerMessageV2, async_proto::ReadError>>()),
             Some(Event {
+                id: Utc::now().format("sil%Y").to_string(),
+                calendar_events: Vec::default(),
                 timezone: chrono_tz::Europe::Berlin,
             }),
         )
@@ -223,7 +263,13 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                 ServerMessageV2::Ping => continue, //TODO send pong
                 ServerMessageV2::Error { debug, display } => return Err(Error::Server { debug, display }),
                 ServerMessageV2::NoEvent => None,
-                ServerMessageV2::CurrentEvent { id: _, timezone } => Some(Event { timezone }),
+                ServerMessageV2::CurrentEvent { id, timezone } => {
+                    let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{id}/overview.json"))
+                        .send().await?
+                        .detailed_error_for_status().await?
+                        .json_with_text_in_error().await?;
+                    Some(Event { id, calendar_events, timezone })
+                }
                 ServerMessageV2::LatestSilVersion(version) => {
                     update_check(states_tx.clone(), allow_self_update, version).await?; //TODO run in background
                     continue
@@ -242,7 +288,13 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                 ServerMessageV2::Ping => continue, //TODO send pong
                 ServerMessageV2::Error { debug, display } => return Err(Error::Server { debug, display }),
                 ServerMessageV2::NoEvent => current_event = None,
-                ServerMessageV2::CurrentEvent { id: _, timezone } => current_event = Some(Event { timezone }),
+                ServerMessageV2::CurrentEvent { id, timezone } => {
+                    let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{id}/overview.json"))
+                        .send().await?
+                        .detailed_error_for_status().await?
+                        .json_with_text_in_error().await?;
+                    current_event = Some(Event { id, calendar_events, timezone });
+                }
                 ServerMessageV2::LatestSilVersion(version) => update_check(states_tx.clone(), allow_self_update, version).await?, //TODO run in background
             },
             _ = interval.tick() => {

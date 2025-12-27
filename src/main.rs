@@ -21,9 +21,11 @@ use {
         FontSettings,
         layout::{
             GlyphRasterConfig,
+            HorizontalAlign,
             VerticalAlign,
         },
     },
+    gefolge_web_lib::time::MaybeLocalDateTime,
     if_chain::if_chain,
     itertools::Itertools as _,
     rand::prelude::*,
@@ -108,8 +110,24 @@ impl ControlFlowExt for ControlFlow {
 
 #[derive(Debug, thiserror::Error)]
 enum DrawError {
+    #[error("failed to create rectangle with dimensions: l={l}, t={t}, r={r}, b={b}")]
+    RectLtrb {
+        l: f32,
+        t: f32,
+        r: f32,
+        b: f32,
+    },
     #[error(transparent)] Text(#[from] text::Error),
     #[error(transparent)] TimeFromLocal(#[from] wheel::traits::TimeFromLocalError<DateTime<Tz>>),
+    #[error(transparent)] ToMaybeLocal(#[from] gefolge_web_lib::time::ToMaybeLocalError),
+    #[error("nonlocal datetime")]
+    NonLocal,
+}
+
+impl DrawError {
+    fn rect_from_ltrb(l: f32, t: f32, r: f32, b: f32) -> Result<Rect, Self> {
+        Rect::from_ltrb(l, t, r, b).ok_or(Self::RectLtrb { l, t, r, b })
+    }
 }
 
 struct DrawCache {
@@ -236,6 +254,87 @@ impl DrawCache {
                         .size(400.0)
                         .build(&mut self.text_layout, [width, height])?
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                }
+            }
+            State::Schedule { use_weekdays, tz, ref schedule } => {
+                let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
+                self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into())); //TODO more granular logic depending on times of displayed cal events
+                let size = 100.0 * width / 1920.0;
+                let mut paint = Paint::default();
+                paint.set_color(if self.dark { Color::WHITE } else { Color::BLACK });
+                self.canvas.fill_rect(DrawError::rect_from_ltrb(width / 5.0 - width * 30.0 / 1920.0, height / 5.0 - size / 2.0, width / 5.0 - width * 20.0 / 1920.0, height * 4.0 / 5.0 + size)?, &paint, Transform::identity(), None);
+                for (idx, cal_event) in schedule.into_iter().enumerate() {
+                    let start = match cal_event.start.to_maybe_local(Some(tz))? {
+                        MaybeLocalDateTime::Nonlocal(_) => return Err(DrawError::NonLocal),
+                        MaybeLocalDateTime::Local(start) => start,
+                    };
+                    let end = match cal_event.end.to_maybe_local(Some(tz))? {
+                        MaybeLocalDateTime::Nonlocal(_) => return Err(DrawError::NonLocal),
+                        MaybeLocalDateTime::Local(end) => end,
+                    };
+                    let (prefix, subprefix) = if start.with_timezone(&Utc) - now_utc < TimeDelta::days(1) {
+                        (
+                            start.format("%H:%M").to_string(),
+                            if start.with_timezone(&Utc) <= now_utc {
+                                end.format("bis %H:%M").to_string()
+                            } else if start.with_timezone(&Utc) - now_utc < TimeDelta::hours(1) {
+                                format!("in {}min", (start.with_timezone(&Utc) - now_utc).num_minutes())
+                            } else {
+                                format!("in {}h", (start.with_timezone(&Utc) - now_utc).num_hours())
+                            },
+                        )
+                    } else {
+                        (
+                            if start.with_timezone(&Utc) - now_utc < TimeDelta::days(7) {
+                                if use_weekdays {
+                                    match start.weekday() {
+                                        Weekday::Mon => format!("Mo"),
+                                        Weekday::Tue => format!("Di"),
+                                        Weekday::Wed => format!("Mi"),
+                                        Weekday::Thu => format!("Do"),
+                                        Weekday::Fri => format!("Fr"),
+                                        Weekday::Sat => format!("Sa"),
+                                        Weekday::Sun => format!("So"),
+                                    }
+                                } else {
+                                    start.format("%d.").to_string()
+                                }
+                            } else {
+                                start.format("%d.%m.").to_string()
+                            },
+                            start.format("%H:%M").to_string(),
+                        )
+                    };
+                    text::Builder::new(&self.dejavu_sans, &prefix)
+                        .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                        .size(size)
+                        .bounds_inner(DrawError::rect_from_ltrb(0.0, height * idx as f32 / 5.0 - size / 2.0, width / 5.0 - size / 2.0, height * idx as f32 / 5.0 + size / 2.0)?)
+                        .halign(HorizontalAlign::Right)
+                        .build(&mut self.text_layout)
+                        .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    text::Builder::new(&self.dejavu_sans, &subprefix)
+                        .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                        .size(size / 2.0)
+                        .bounds_inner(DrawError::rect_from_ltrb(0.0, height * idx as f32 / 5.0 + size / 2.0, width / 5.0 - size / 2.0, height * idx as f32 / 5.0 + size)?)
+                        .halign(HorizontalAlign::Right)
+                        .build(&mut self.text_layout)
+                        .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    text::Builder::new(&self.dejavu_sans, &cal_event.text)
+                        .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                        .size(size)
+                        .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * idx as f32 / 5.0 - size / 2.0, width, height * idx as f32 / 5.0 + size / 2.0)?)
+                        .halign(HorizontalAlign::Left)
+                        .build(&mut self.text_layout)
+                        .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    if let Some(subtitle) = &cal_event.ib_subtitle {
+                        text::Builder::new(&self.dejavu_sans, subtitle)
+                            .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                            .size(size / 2.0)
+                            .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * idx as f32 / 5.0 + size / 2.0, width, height * idx as f32 / 5.0 + size)?)
+                            .halign(HorizontalAlign::Left)
+                            .build(&mut self.text_layout)
+                            .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    }
                 }
             }
         }
