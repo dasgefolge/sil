@@ -210,10 +210,15 @@ async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: b
     } else {
         if allow_self_update {
             #[cfg(feature = "nixos")] {
-                tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "updating Nix dependencies" })))?;
-                Command::new("nix").arg("flake").arg("update").current_dir("/etc/nixos").check("nix flake update").await?;
                 tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "switching NixOS config" })))?;
-                Command::new("sudo").arg("nixos-rebuild").arg("switch").check("nixos-rebuild").await?;
+                Command::new("/run/wrappers/bin/sudo")
+                    .arg("/run/current-system/sw/bin/nixos-rebuild")
+                    .arg("switch")
+                    .arg("--recreate-lock-file")
+                    .arg("--refresh")
+                    .arg("--no-write-lock-file")
+                    .arg("--flake=git+ssh://fenhl@fenhl.net/opt/git/localhost/dev/dev.git")
+                    .spawn().at_command("nixos-rebuild")?;
             }
             #[cfg(not(feature = "nixos"))] {
                 #[cfg(unix)] {
