@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use {
     std::{
         collections::HashMap,
@@ -90,7 +93,12 @@ mod state;
 #[cfg(target_os = "macos")] const DEJAVU_PATH: &str = "/Users/fenhl/Library/Fonts/DejaVuSans.ttf";
 #[cfg(target_os = "windows")] const DEJAVU_PATH: &str = "\\Windows\\Fonts\\DejaVuSans.ttf";
 
+#[cfg(target_os = "linux")] const NOTO_EMOJI_PATH: &str = "/usr/share/fonts/truetype/dejavu/NotoEmoji.ttf";
+#[cfg(target_os = "macos")] const NOTO_EMOJI_PATH: &str = "/Users/fenhl/Library/Fonts/NotoEmoji.ttf";
+#[cfg(target_os = "windows")] const NOTO_EMOJI_PATH: &str = "\\Windows\\Fonts\\NotoEmoji.ttf";
+
 const NIXOS_DEJAVU_PATH: &str = "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf";
+const NIXOS_NOTO_EMOJI_PATH: &str = "/run/current-system/sw/share/X11/fonts/NotoEmoji.ttf";
 
 trait ControlFlowExt {
     fn redraw_immediately(&mut self);
@@ -141,6 +149,7 @@ struct DrawCache {
     logo: Option<Pixmap>,
     text_layout: fontdue::layout::Layout,
     dejavu_sans: Font,
+    noto_emoji: Font,
     glyph_cache: HashMap<(GlyphRasterConfig, [u8; 4]), Pixmap>, // ColorU8 does not implement Eq or Hash
 }
 
@@ -179,6 +188,7 @@ impl DrawCache {
                 let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
                 self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into()));
                 text::Builder::new(&self.dejavu_sans, &format!("Es ist {} Uhr.\nBitte alle Fenster schließen.", now_utc.with_timezone(&tz).format("%H:%M:%S")))
+                    .fallback_font(&self.noto_emoji)
                     .color(if self.dark { Color::WHITE } else { Color::BLACK })
                     .size(100.0)
                     .build(&mut self.text_layout, [width, height])?
@@ -187,6 +197,7 @@ impl DrawCache {
             State::Error(ref e) => {
                 self.canvas.fill(Color::from_rgba8(0xff, 0x00, 0x00, 0xff));
                 let text = text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
+                    .fallback_font(&self.noto_emoji)
                     .color(Color::WHITE)
                     .size(100.0)
                     .build(&mut self.text_layout, [width, height])?;
@@ -194,6 +205,7 @@ impl DrawCache {
                     text.draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                 } else {
                     let text = text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
+                        .fallback_font(&self.noto_emoji)
                         .color(Color::WHITE)
                         .size(50.0)
                         .build(&mut self.text_layout, [width, height])?;
@@ -201,6 +213,7 @@ impl DrawCache {
                         text.draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     } else {
                         text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
+                            .fallback_font(&self.noto_emoji)
                             .color(Color::WHITE)
                             .size(25.0)
                             .build(&mut self.text_layout, [width, height])?
@@ -212,6 +225,7 @@ impl DrawCache {
                 let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
                 self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into()));
                 text::Builder::new(&self.dejavu_sans, &now_utc.with_timezone(&tz).format("%d.%m.%Y %H:%M:%S").to_string())
+                    .fallback_font(&self.noto_emoji)
                     .color(if self.dark { Color::WHITE } else { Color::BLACK })
                     .size(100.0)
                     .build(&mut self.text_layout, [width, height])?
@@ -223,12 +237,14 @@ impl DrawCache {
                     self.canvas.draw_pixmap(0, 0, logo.as_ref(), &PixmapPaint::default(), Transform::from_translate((width - logo.width() as f32) / 2.0, (height - logo.height() as f32) / 2.0), None);
                 }
                 text::Builder::new(&self.dejavu_sans, &format!("{width}x{height}"))
+                    .fallback_font(&self.noto_emoji)
                     .color(if self.dark { Color::WHITE } else { Color::BLACK })
                     .size(24.0)
                     .valign(VerticalAlign::Top)
                     .build(&mut self.text_layout, [width, height])?
                     .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                 text::Builder::new(&self.dejavu_sans, msg)
+                    .fallback_font(&self.noto_emoji)
                     .color(if self.dark { Color::WHITE } else { Color::BLACK })
                     .size(24.0)
                     .valign(VerticalAlign::Bottom)
@@ -243,6 +259,7 @@ impl DrawCache {
                     let mut delta = now.timezone().with_ymd_and_hms(now.year() + 1, 1, 1, 0, 0, 0).single_ok()? - now;
                     if delta < TimeDelta::minutes(1) {
                         text::Builder::new(&self.dejavu_sans, &delta.num_seconds().to_string())
+                            .fallback_font(&self.noto_emoji)
                             .color(if self.dark { Color::WHITE } else { Color::BLACK })
                             .size(400.0)
                             .build(&mut self.text_layout, [width, height])?
@@ -251,6 +268,7 @@ impl DrawCache {
                         let mins = delta.num_minutes();
                         delta = delta - TimeDelta::minutes(mins);
                         text::Builder::new(&self.dejavu_sans, &format!("{mins}:{:02}", delta.num_seconds()))
+                            .fallback_font(&self.noto_emoji)
                             .color(if self.dark { Color::WHITE } else { Color::BLACK })
                             .size(200.0)
                             .build(&mut self.text_layout, [width, height])?
@@ -261,6 +279,7 @@ impl DrawCache {
                         let mins = delta.num_minutes();
                         delta = delta - TimeDelta::minutes(mins);
                         text::Builder::new(&self.dejavu_sans, &format!("{hours}:{mins:02}:{:02}", delta.num_seconds()))
+                            .fallback_font(&self.noto_emoji)
                             .color(if self.dark { Color::WHITE } else { Color::BLACK })
                             .size(200.0)
                             .build(&mut self.text_layout, [width, height])?
@@ -269,6 +288,7 @@ impl DrawCache {
                 } else {
                     //TODO shrink text on small resolutions to avoid line wrap
                     text::Builder::new(&self.dejavu_sans, &now.year().to_string())
+                        .fallback_font(&self.noto_emoji)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(400.0)
                         .build(&mut self.text_layout, [width, height])?
@@ -325,6 +345,7 @@ impl DrawCache {
                         )
                     };
                     text::Builder::new(&self.dejavu_sans, &prefix)
+                        .fallback_font(&self.noto_emoji)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(size)
                         .bounds_inner(DrawError::rect_from_ltrb(0.0, height * (idx + 1) as f32 / 5.0 - size / 2.0, width / 5.0 - size / 2.0, height * (idx + 1) as f32 / 5.0 + size / 2.0)?)
@@ -332,6 +353,7 @@ impl DrawCache {
                         .build(&mut self.text_layout)
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     text::Builder::new(&self.dejavu_sans, &subprefix)
+                        .fallback_font(&self.noto_emoji)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(size / 2.0)
                         .bounds_inner(DrawError::rect_from_ltrb(0.0, height * (idx + 1) as f32 / 5.0 + size / 2.0, width / 5.0 - size / 2.0, height * (idx + 1) as f32 / 5.0 + size)?)
@@ -339,6 +361,7 @@ impl DrawCache {
                         .build(&mut self.text_layout)
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     text::Builder::new(&self.dejavu_sans, &cal_event.text)
+                        .fallback_font(&self.noto_emoji)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(size)
                         .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * (idx + 1) as f32 / 5.0 - size / 2.0, width, height * (idx + 1) as f32 / 5.0 + size / 2.0)?)
@@ -347,6 +370,7 @@ impl DrawCache {
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     if let Some(subtitle) = &cal_event.ib_subtitle {
                         text::Builder::new(&self.dejavu_sans, subtitle)
+                            .fallback_font(&self.noto_emoji)
                             .color(if self.dark { Color::WHITE } else { Color::BLACK })
                             .size(size / 2.0)
                             .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * (idx + 1) as f32 / 5.0 + size / 2.0, width, height * (idx + 1) as f32 / 5.0 + size)?)
@@ -455,6 +479,14 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
             fs::read(NIXOS_DEJAVU_PATH).await?
         } else {
             fs::read(DEJAVU_PATH).await?
+        }, FontSettings {
+            scale: 100.0,
+            ..FontSettings::default()
+        }).map_err(Error::Font)?,
+        noto_emoji: Font::from_bytes(if fs::exists(NIXOS_NOTO_EMOJI_PATH).await? {
+            fs::read(NIXOS_NOTO_EMOJI_PATH).await?
+        } else {
+            fs::read(NOTO_EMOJI_PATH).await?
         }, FontSettings {
             scale: 100.0,
             ..FontSettings::default()

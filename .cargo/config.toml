@@ -1,1 +1,7 @@
-net.git-fetch-with-cli = true # for ricochet-robots dependency
+[build]
+rustflags = [
+    "-C", "target-cpu=native", # for performance
+]
+
+[net]
+git-fetch-with-cli = true # for ricochet-robots dependency
