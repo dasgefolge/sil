@@ -3904,7 +3904,7 @@ dependencies = [
 
 [[package]]
 name = "sil"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "async-proto",
  "chrono",

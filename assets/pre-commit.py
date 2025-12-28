@@ -32,3 +32,5 @@ if platform.system() == 'Windows':
     subprocess.run(['wsl', '-d', 'ubuntu-m2', 'rsync', '--mkpath', '--delete', '-av', '/mnt/c/Users/fenhl/git/github.com/dasgefolge/sil/stage/', '/home/fenhl/wslgit/github.com/dasgefolge/sil/', '--exclude', 'target'], check=True) # copy the tree to the WSL file system to improve compile times
     subprocess.run(['wsl', '-d', 'ubuntu-m2', 'env', '-C', '/home/fenhl/wslgit/github.com/dasgefolge/sil', '/home/fenhl/.cargo/bin/cargo', 'check'], check=True)
     subprocess.run(['wsl', 'nix', 'build', '--no-link'], check=True)
+else:
+    subprocess.run(['nix', 'build', '--no-link'], check=True)

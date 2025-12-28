@@ -218,7 +218,7 @@ async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: b
                     .arg("--refresh")
                     .arg("--no-write-lock-file")
                     .arg("--flake=git+ssh://fenhl@fenhl.net/opt/git/localhost/dev/dev.git")
-                    .spawn().at_command("nixos-rebuild")?;
+                    .check("nixos-rebuild").await?;
             }
             #[cfg(not(feature = "nixos"))] {
                 #[cfg(unix)] {
