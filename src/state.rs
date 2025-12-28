@@ -325,6 +325,9 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
 pub(crate) async fn maintain(rng: impl Rng + Send, http_client: reqwest::Client, mock_event: bool, allow_self_update: bool, ws_url: String, states_tx: EventLoopProxy<UserEvent>) {
     match maintain_inner(rng, &http_client, mock_event, allow_self_update, ws_url, states_tx.clone()).await {
         Ok(never) => match never {},
-        Err(e) => { let _ = tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Error(Arc::new(e))))); }
+        Err(e) => {
+            println!("{e}\n\n{e:?}");
+            let _ = tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Error(Arc::new(e)))));
+        }
     }
 }

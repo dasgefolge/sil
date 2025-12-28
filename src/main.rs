@@ -183,11 +183,19 @@ impl DrawCache {
             }
             State::Error(ref e) => {
                 self.canvas.fill(Color::from_rgba8(0xff, 0x00, 0x00, 0xff));
-                text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
+                let text = text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
                     .color(Color::WHITE)
                     .size(100.0)
-                    .build(&mut self.text_layout, [width, height])?
-                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                    .build(&mut self.text_layout, [width, height])?;
+                if text.rect_inner()?.height() <= height {
+                    text.draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                } else {
+                    text::Builder::new(&self.dejavu_sans, &format!("{e}\n\n{e:?}"))
+                        .color(Color::WHITE)
+                        .size(50.0)
+                        .build(&mut self.text_layout, [width, height])?
+                        .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+                }
             }
             State::HexagesimalTime(tz) => {
                 let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
@@ -519,6 +527,7 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
                         #[cfg(not(feature = "nixos"))] {
                             #[cfg(unix)] {
                                 let e = process::Command::new(if current_exe == Path::new(BIN_PATH) && Path::new(REIWA_BIN_PATH).exists() { REIWA_BIN_PATH } else { BIN_PATH }).exec();
+                                println!("{e}\n\n{e:?}");
                                 cache.state = State::Error(Arc::new(e.into()));
                             }
                             #[cfg(not(unix))] {
