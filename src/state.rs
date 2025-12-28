@@ -2,6 +2,7 @@ use {
     std::{
         collections::HashSet,
         convert::Infallible as Never,
+        io::prelude::*,
         pin::pin,
         sync::Arc,
         time::Duration as StdDuration,
@@ -326,6 +327,7 @@ pub(crate) async fn maintain(rng: impl Rng + Send, http_client: reqwest::Client,
     match maintain_inner(rng, &http_client, mock_event, allow_self_update, ws_url, states_tx.clone()).await {
         Ok(never) => match never {},
         Err(e) => {
+            if let Ok(mut log) = std::fs::OpenOptions::new().append(true).create(true).open("sil.log") { let _ = write!(log, "{e}\n\n{e:?}"); }
             println!("{e}\n\n{e:?}");
             let _ = tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Error(Arc::new(e)))));
         }
