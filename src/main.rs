@@ -327,21 +327,21 @@ impl DrawCache {
                     text::Builder::new(&self.dejavu_sans, &prefix)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(size)
-                        .bounds_inner(DrawError::rect_from_ltrb(0.0, height * idx as f32 / 5.0 - size / 2.0, width / 5.0 - size / 2.0, height * idx as f32 / 5.0 + size / 2.0)?)
+                        .bounds_inner(DrawError::rect_from_ltrb(0.0, height * (idx + 1) as f32 / 5.0 - size / 2.0, width / 5.0 - size / 2.0, height * (idx + 1) as f32 / 5.0 + size / 2.0)?)
                         .halign(HorizontalAlign::Right)
                         .build(&mut self.text_layout)
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     text::Builder::new(&self.dejavu_sans, &subprefix)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(size / 2.0)
-                        .bounds_inner(DrawError::rect_from_ltrb(0.0, height * idx as f32 / 5.0 + size / 2.0, width / 5.0 - size / 2.0, height * idx as f32 / 5.0 + size)?)
+                        .bounds_inner(DrawError::rect_from_ltrb(0.0, height * (idx + 1) as f32 / 5.0 + size / 2.0, width / 5.0 - size / 2.0, height * (idx + 1) as f32 / 5.0 + size)?)
                         .halign(HorizontalAlign::Right)
                         .build(&mut self.text_layout)
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     text::Builder::new(&self.dejavu_sans, &cal_event.text)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
                         .size(size)
-                        .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * idx as f32 / 5.0 - size / 2.0, width, height * idx as f32 / 5.0 + size / 2.0)?)
+                        .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * (idx + 1) as f32 / 5.0 - size / 2.0, width, height * (idx + 1) as f32 / 5.0 + size / 2.0)?)
                         .halign(HorizontalAlign::Left)
                         .build(&mut self.text_layout)
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
@@ -349,7 +349,7 @@ impl DrawCache {
                         text::Builder::new(&self.dejavu_sans, subtitle)
                             .color(if self.dark { Color::WHITE } else { Color::BLACK })
                             .size(size / 2.0)
-                            .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * idx as f32 / 5.0 + size / 2.0, width, height * idx as f32 / 5.0 + size)?)
+                            .bounds_inner(DrawError::rect_from_ltrb(width / 5.0, height * (idx + 1) as f32 / 5.0 + size / 2.0, width, height * (idx + 1) as f32 / 5.0 + size)?)
                             .halign(HorizontalAlign::Left)
                             .build(&mut self.text_layout)
                             .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
