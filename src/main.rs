@@ -286,11 +286,10 @@ impl DrawCache {
                             .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                     }
                 } else {
-                    //TODO shrink text on small resolutions to avoid line wrap
                     text::Builder::new(&self.dejavu_sans, &now.year().to_string())
                         .fallback_font(&self.noto_emoji)
                         .color(if self.dark { Color::WHITE } else { Color::BLACK })
-                        .size(400.0)
+                        .size(400.0 * width / 1920.0)
                         .build(&mut self.text_layout, [width, height])?
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                 }
