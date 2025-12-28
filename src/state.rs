@@ -261,7 +261,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
         let config = Config::load().await?;
         let (mut sink, mut stream) = async_proto::websocket027(ws_url).await?;
         sink.send(ClientMessageV2::Auth {
-            api_key: config.api_key,
+            api_key: config.api_key.clone(),
         }).await?;
         sink.send(ClientMessageV2::CurrentEvent).await?;
         let current_event = loop {
@@ -271,6 +271,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                 ServerMessageV2::NoEvent => None,
                 ServerMessageV2::CurrentEvent { id, timezone } => {
                     let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{id}/overview.json"))
+                        .basic_auth("api", Some(config.api_key))
                         .send().await?
                         .detailed_error_for_status().await?
                         .json_with_text_in_error().await?;
