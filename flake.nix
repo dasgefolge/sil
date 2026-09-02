@@ -19,6 +19,15 @@
                 allowBuiltinFetchGit = true; # allows omitting cargoLock.outputHashes
                 lockFile = ./Cargo.lock;
             };
+            nativeBuildInputs = with pkgs; [
+                makeWrapper # required for wrapProgram in postFixup hook
+            ];
+            postFixup = ''
+                wrapProgram $out/bin/sil \
+                    --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
+                        wayland # required to fix runtime error “The wayland library could not be loaded”
+                    ])}
+            '';
             src = ./.;
         };
     };
