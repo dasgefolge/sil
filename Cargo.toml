@@ -1,8 +1,9 @@
 [package]
 name = "sil"
-version = "2.2.2"
+version = "2.2.3"
 authors = ["Fenhl <fenhl@fenhl.net>"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.95" # nixpkgs stable
 
 [lints.rust]
 rust_2018_idioms = "deny"
