@@ -25,6 +25,7 @@
             postFixup = ''
                 wrapProgram $out/bin/sil \
                     --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
+                        libxkbcommon # required to fix runtime error “XKBNotFound”
                         wayland # required to fix runtime error “The wayland library could not be loaded”
                     ])}
             '';
