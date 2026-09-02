@@ -1,31 +1,25 @@
 {
-    inputs.nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/*.tar.gz";
-    outputs = { self, nixpkgs }: let
-        supportedSystems = [
-            "aarch64-darwin"
-            "aarch64-linux"
-            "x86_64-darwin"
-            "x86_64-linux"
-        ];
-        forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
-            pkgs = import nixpkgs { inherit system; };
-        });
-    in {
-        packages = forEachSupportedSystem ({ pkgs, ... }: let
+    inputs.flake.url = "github:fenhl/flake";
+    outputs = attrs: attrs.flake.lib {
+        devShells.default = { pkgs, ... }: {
+            packages = with pkgs; [
+                cargo
+                python3 # required for pre-commit script
+            ];
+        };
+        packages.default = { pkgs, ... }: let
             manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
-        in {
-            default = pkgs.rustPlatform.buildRustPackage {
-                buildFeatures = [
-                    "nixos"
-                ];
-                cargoLock = {
-                    allowBuiltinFetchGit = true; # allows omitting cargoLock.outputHashes
-                    lockFile = ./Cargo.lock;
-                };
-                pname = "sil";
-                src = ./.;
-                version = manifest.version;
+        in pkgs.rustPlatform.buildRustPackage {
+            inherit (manifest) version;
+            pname = "sil";
+            buildFeatures = [
+                "nixos"
+            ];
+            cargoLock = {
+                allowBuiltinFetchGit = true; # allows omitting cargoLock.outputHashes
+                lockFile = ./Cargo.lock;
             };
-        });
+            src = ./.;
+        };
     };
 }

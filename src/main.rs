@@ -412,6 +412,8 @@ enum Error {
         debug: String,
         display: String,
     },
+    #[error("received unexpected message from WebSocket")]
+    UnexpectedMessage,
 }
 
 fn pixmap_to_softbuf<D: raw_window_handle::HasDisplayHandle, W: raw_window_handle::HasWindowHandle>(pixmap: PixmapRef<'_>, mut buffer: softbuffer::Buffer<'_, D, W>) -> Result<(), SoftBufferError> {
@@ -451,6 +453,7 @@ struct Args {
 
 #[wheel::main]
 async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws_url }: Args) -> Result<i32, Error> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     #[cfg(unix)] let current_exe = env::current_exe().at_unknown()?; // determine at the start of the program, before anything can delete it
     #[cfg(unix)] {
         if current_exe == Path::new(REIWA_BIN_PATH) {
@@ -497,7 +500,7 @@ async fn main(Args { light, mock_event, mock_state, no_self_update, windowed, ws
     if mock_state {
         cache.state = State::BinaryTime(chrono_tz::Etc::UTC);
     } else {
-        tokio::spawn(state::maintain(SmallRng::from_entropy(), http_client, mock_event, !no_self_update, ws_url, event_loop.create_proxy()));
+        tokio::spawn(state::maintain(rand::make_rng::<SmallRng>(), http_client, mock_event, !no_self_update, ws_url, event_loop.create_proxy()));
     }
     let (exit_code_tx, mut exit_code_rx) = oneshot::channel();
     let mut exit_code_tx = Some(exit_code_tx);

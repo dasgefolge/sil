@@ -1,6 +1,6 @@
 [package]
 name = "sil"
-version = "2.2.1"
+version = "2.2.2"
 authors = ["Fenhl <fenhl@fenhl.net>"]
 edition = "2021"
 
@@ -23,35 +23,36 @@ strip = true
 nixos = []
 
 [dependencies]
-async-proto = { version = "0.26", features = ["tokio-tungstenite027"] }
+async-proto = { version = "0.26", features = ["tokio-tungstenite030"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-enum-iterator = "1"
+enum-iterator = "2"
 fontdue = "0.9"
 futures = "0.3"
 gefolge-web-lib = { git = "https://github.com/dasgefolge/gefolge.org" }
 if_chain = "1"
-itertools = "0.10"
-mimalloc = "0.1.48"
-nonempty-collections = "1.0.0"
-png = "0.17"
-rand = { version = "0.8", default-features = false, features = ["small_rng"] }
-raw-window-handle = "0.6.0"
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "macos-system-configuration", "rustls-tls", "json"] }
-semver = "1.0.26"
+itertools = "0.15"
+mimalloc = "0.1"
+nonempty-collections = "1"
+png = "0.18"
+rand = "0.10"
+raw-window-handle = "0.6"
+reqwest = { version = "0.13", default-features = false, features = ["charset", "gzip", "hickory-dns", "http2", "json", "rustls-no-provider", "system-proxy", "zstd"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 softbuffer = "0.4"
 text = { git = "https://github.com/fenhl/text" }
-thiserror = "1"
-tiny-skia = "0.11"
+thiserror = "2"
+tiny-skia = "0.12"
 tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
-tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 wheel = { git = "https://github.com/fenhl/wheel", features = ["chrono", "reqwest", "serde_json"] }
 winit = "0.30"
 
 [target.'cfg(windows)'.dependencies]
-directories = "4"
+directories = "6"
 
 [target."cfg(unix)".dependencies]
 xdg = "3"

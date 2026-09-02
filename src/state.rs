@@ -243,9 +243,9 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
 
     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "loading Gefolge logo" })))?;
     load_images_inner(http_client, states_tx.clone()).await?;
-    if rng.gen_bool(0.1) {
+    if rng.random_bool(0.1) {
         tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "reticulating splines" })))?;
-        sleep(StdDuration::from_secs_f64(rng.gen_range(0.5..1.5))).await;
+        sleep(StdDuration::from_secs_f64(rng.random_range(0.5..1.5))).await;
     }
     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "getting current event" })))?;
     let (mut stream, mut current_event) = if mock_event {
@@ -259,7 +259,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
         )
     } else {
         let config = Config::load().await?;
-        let (mut sink, mut stream) = async_proto::websocket027(ws_url).await?;
+        let (mut sink, mut stream) = async_proto::websocket030(ws_url).await?;
         sink.send(ClientMessageV2::Auth {
             api_key: config.api_key.clone(),
         }).await?;
@@ -281,6 +281,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                     update_check(states_tx.clone(), allow_self_update, version).await?; //TODO run in background
                     continue
                 }
+                ServerMessageV2::MarkdownPreview(_) => return Err(Error::UnexpectedMessage),
             }
         };
         (Either::Right(stream), current_event)
@@ -303,6 +304,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                     current_event = Some(Event { id, calendar_events, timezone });
                 }
                 ServerMessageV2::LatestSilVersion(version) => update_check(states_tx.clone(), allow_self_update, version).await?, //TODO run in background
+                ServerMessageV2::MarkdownPreview(_) => return Err(Error::UnexpectedMessage),
             },
             _ = interval.tick() => {
                 let mut available_modes = all::<Mode>().filter_map(|mode| Some((mode, mode.state(current_event.as_ref())?))).collect::<Vec<_>>();
