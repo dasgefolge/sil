@@ -975,6 +975,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derivative"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2482,6 +2493,16 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "log-lock"
+version = "0.3.0"
+source = "git+https://github.com/fenhl/log-lock#c6058bb9a4b93e9f89d06e588ed67bdc101ffac4"
+dependencies = [
+ "derivative",
+ "parking_lot",
+ "tokio",
+]
 
 [[package]]
 name = "loom"
@@ -4270,7 +4291,7 @@ dependencies = [
 
 [[package]]
 name = "sil"
-version = "2.2.5"
+version = "2.3.0"
 dependencies = [
  "async-proto",
  "chrono",
@@ -4283,6 +4304,7 @@ dependencies = [
  "gefolge-web-lib",
  "if_chain",
  "itertools 0.15.0",
+ "log-lock",
  "mimalloc",
  "nonempty-collections",
  "png",
@@ -4292,6 +4314,8 @@ dependencies = [
  "rustls",
  "semver",
  "serde",
+ "serde_json_path_to_error",
+ "serenity",
  "softbuffer",
  "text",
  "thiserror 2.0.20",
@@ -4656,6 +4680,17 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "syn"
+version = "1.0.109"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
 
 [[package]]
 name = "syn"

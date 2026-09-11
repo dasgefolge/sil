@@ -294,6 +294,14 @@ impl DrawCache {
                         .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
                 }
             }
+            State::RtwwPlayerList(ref player_list) => {
+                text::Builder::new(&self.dejavu_sans, player_list)
+                    .fallback_font(&self.noto_emoji)
+                    .color(if self.dark { Color::WHITE } else { Color::BLACK })
+                    .size(50.0)
+                    .build(&mut self.text_layout, [width, height])?
+                    .draw(self.canvas.as_mut(), &mut self.glyph_cache)?;
+            }
             State::Schedule { use_weekdays, tz, ref schedule } => {
                 let nanos_until_next_second = 1_000_000_000 - now_utc.timestamp_subsec_nanos() % 1_000_000_000;
                 self.redraw_at.redraw_at(now_monotonic + Duration::from_nanos(nanos_until_next_second.into())); //TODO more granular logic depending on times of displayed cal events
@@ -390,6 +398,7 @@ enum Error {
     #[error(transparent)] EventLoop(#[from] winit::error::EventLoopError),
     #[error(transparent)] EventLoopClosed(#[from] winit::event_loop::EventLoopClosed<UserEvent>),
     #[error(transparent)] Io(#[from] io::Error),
+    #[error(transparent)] Json(#[from] serde_json::Error),
     #[error(transparent)] Png(#[from] png::DecodingError),
     #[error(transparent)] Read(#[from] async_proto::ReadError),
     #[error(transparent)] Reqwest(#[from] reqwest::Error),

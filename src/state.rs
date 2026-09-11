@@ -1,10 +1,19 @@
 use {
     std::{
-        collections::HashSet,
+        collections::{
+            HashSet,
+            hash_map::{
+                self,
+                HashMap,
+            },
+        },
         convert::Infallible as Never,
         io::prelude::*,
         pin::pin,
-        sync::Arc,
+        sync::{
+            Arc,
+            LazyLock,
+        },
         time::Duration as StdDuration,
     },
     chrono::{
@@ -25,21 +34,27 @@ use {
         },
     },
     gefolge_web_lib::{
-        time::MaybeAwareDateTime,
+        time::{
+            MaybeAwareDateTime,
+            MaybeLocalDateTime,
+        },
         websocket::{
             ClientMessageV2,
             ServerMessageV2,
         },
     },
+    log_lock::*,
     nonempty_collections::NEVec,
     rand::prelude::*,
     semver::Version,
     serde::Deserialize,
+    serenity::model::prelude::*,
     tiny_skia::Pixmap,
     tokio::{
         io::AsyncReadExt as _,
         select,
         time::{
+            Instant,
             MissedTickBehavior,
             interval,
             sleep,
@@ -67,19 +82,42 @@ use {
 };
 #[cfg(all(not(feature = "nixos"), unix))] use crate::REIWA_BIN_PATH;
 
+static NICK_CACHE: LazyLock<Mutex<HashMap<UserId, NickCacheEntry>>> = LazyLock::new(|| Mutex::default());
+
+struct NickCacheEntry {
+    nick: String,
+    timestamp: Instant,
+}
+
 struct Event {
     id: String,
     calendar_events: Vec<CalEvent>,
+    rtww_data: Option<RtwwData>,
     timezone: Tz,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CalEvent {
+    pub(crate) programmpunkt_id: String,
     pub(crate) start: MaybeAwareDateTime,
     pub(crate) end: MaybeAwareDateTime,
     pub(crate) text: String,
     pub(crate) ib_subtitle: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RtwwData {
+    players: Vec<RtwwPlayer>,
+}
+
+fn make_true() -> bool { true }
+
+#[derive(Deserialize)]
+struct RtwwPlayer {
+    #[serde(default = "make_true")]
+    alive: bool,
+    id: UserId,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Sequence)]
@@ -89,14 +127,16 @@ enum Mode {
     HexagesimalTime,
     Logo,
     NewYear,
+    RtwwPlayerList,
     Schedule,
 }
 
 impl Mode {
-    fn state(&self, current_event: Option<&Event>) -> Option<(Priority, State)> {
-        match self {
+    async fn state(&self, http_client: &reqwest::Client, api_key: &str, current_event: Option<&Event>) -> Result<Option<(Priority, State)>, Error> {
+        let Some(current_event) = current_event else { return Ok(None) };
+        Ok(match self {
             Self::BinaryTime => {
-                let timezone = current_event?.timezone;
+                let timezone = current_event.timezone;
                 let now = Utc::now().with_timezone(&timezone);
                 let tomorrow = now.date_naive().succ_opt().expect("date overflow");
                 if tomorrow.month() == 1 && tomorrow.day() == 1 {
@@ -106,7 +146,7 @@ impl Mode {
                 }
             }
             Self::CloseWindows => {
-                let timezone = current_event?.timezone;
+                let timezone = current_event.timezone;
                 let now = Utc::now().with_timezone(&timezone);
                 if now.hour() == 22 && now.minute() < 5 {
                     Some((Priority::Programm, State::CloseWindows(timezone)))
@@ -114,10 +154,10 @@ impl Mode {
                     None
                 }
             }
-            Self::HexagesimalTime => Some((Priority::Normal, State::HexagesimalTime(current_event?.timezone))),
+            Self::HexagesimalTime => Some((Priority::Normal, State::HexagesimalTime(current_event.timezone))),
             Self::Logo => None,
             Self::NewYear => {
-                let timezone = current_event?.timezone;
+                let timezone = current_event.timezone;
                 let now = Utc::now().with_timezone(&timezone);
                 if now.month() == 1 && now.day() == 1 && now.hour() == 0 {
                     Some(Priority::Programm)
@@ -130,8 +170,31 @@ impl Mode {
                     })
                 }.map(|priority| (priority, State::NewYear(timezone)))
             }
+            Self::RtwwPlayerList => {
+                let Event { calendar_events, rtww_data, timezone, .. } = current_event;
+                let Some(rtww_data) = &rtww_data else { return Ok(None) };
+                let now = Utc::now().with_timezone(timezone);
+                let Some(_) = calendar_events.iter().find(|cal_event|
+                    cal_event.programmpunkt_id == "rtww"
+                    && cal_event.start.to_maybe_local(Some(*timezone)).is_ok_and(|start| match start {
+                        MaybeLocalDateTime::Nonlocal(_) => false,
+                        MaybeLocalDateTime::Local(start) => start <= now,
+                    })
+                    && cal_event.end.to_maybe_local(Some(*timezone)).is_ok_and(|end| match end {
+                        MaybeLocalDateTime::Nonlocal(_) => false,
+                        MaybeLocalDateTime::Local(end) => end > now,
+                    })
+                ) else { return Ok(None) };
+                let mut rows = Vec::default();
+                for player in &rtww_data.players {
+                    if player.alive {
+                        rows.push(get_nick(http_client, api_key, player.id).await?);
+                    }
+                }
+                Some((Priority::Programm, State::RtwwPlayerList(rows.join("\n"))))
+            }
             Self::Schedule => {
-                let Event { id, calendar_events, timezone, .. } = current_event?;
+                let Event { id, calendar_events, timezone, .. } = current_event;
                 let now = Utc::now().with_timezone(timezone);
                 let schedule = calendar_events.iter()
                     .filter(|cal_event| cal_event.end.to_maybe_local(Some(*timezone)).is_ok_and(|end| end > now))
@@ -140,7 +203,7 @@ impl Mode {
                     .collect::<Vec<_>>();
                 NEVec::try_from_vec(schedule).map(|schedule| (Priority::Normal, State::Schedule { use_weekdays: !id.starts_with("sil"), tz: *timezone, schedule }))
             }
-        }
+        })
     }
 }
 
@@ -161,11 +224,41 @@ pub(crate) enum State {
         msg: &'static str,
     },
     NewYear(Tz),
+    RtwwPlayerList(String),
     Schedule {
         use_weekdays: bool,
         tz: Tz,
         schedule: NEVec<CalEvent>,
     },
+}
+
+#[derive(Deserialize)]
+struct Profile {
+    nick: Option<String>,
+    username: String,
+}
+
+async fn get_nick(http_client: &reqwest::Client, api_key: &str, snowflake: UserId) -> Result<String, Error> {
+    Ok(lock!(nick_cache = NICK_CACHE; match nick_cache.entry(snowflake) {
+        hash_map::Entry::Occupied(mut entry) => if entry.get().timestamp.elapsed() < StdDuration::from_hours(1) {
+            entry.get().nick.clone()
+        } else {
+            let Profile { nick, username } = http_client.get(format!("https://gefolge.org/api/mensch/{snowflake}/profile.json"))
+                .basic_auth("api", Some(api_key))
+                .send().await?
+                .detailed_error_for_status().await?
+                .json_with_text_in_error().await?;
+            entry.insert(NickCacheEntry { nick: nick.unwrap_or(username), timestamp: Instant::now() }).nick.clone()
+        },
+        hash_map::Entry::Vacant(mut entry) => {
+            let Profile { nick, username } = http_client.get(format!("https://gefolge.org/api/mensch/{snowflake}/profile.json"))
+                .basic_auth("api", Some(api_key))
+                .send().await?
+                .detailed_error_for_status().await?
+                .json_with_text_in_error().await?;
+            entry.insert(NickCacheEntry { nick: nick.unwrap_or(username), timestamp: Instant::now() }).nick.clone()
+        }
+    }))
 }
 
 async fn load_images_inner(http_client: &reqwest::Client, states_tx: EventLoopProxy<UserEvent>) -> Result<(), Error> {
@@ -248,17 +341,18 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
         sleep(StdDuration::from_secs_f64(rng.random_range(0.5..1.5))).await;
     }
     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "getting current event" })))?;
+    let config = Config::load().await?;
     let (mut stream, mut current_event) = if mock_event {
         (
             Either::Left(stream::pending::<Result<ServerMessageV2, async_proto::ReadError>>()),
             Some(Event {
                 id: Utc::now().format("sil%Y").to_string(),
                 calendar_events: Vec::default(),
+                rtww_data: None,
                 timezone: chrono_tz::Europe::Berlin,
             }),
         )
     } else {
-        let config = Config::load().await?;
         let (mut sink, mut stream) = async_proto::websocket030(ws_url).await?;
         sink.send(ClientMessageV2::Auth {
             api_key: config.api_key.clone(),
@@ -271,11 +365,17 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                 ServerMessageV2::NoEvent => None,
                 ServerMessageV2::CurrentEvent { id, timezone } => {
                     let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{id}/overview.json"))
-                        .basic_auth("api", Some(config.api_key))
+                        .basic_auth("api", Some(&config.api_key))
                         .send().await?
                         .detailed_error_for_status().await?
                         .json_with_text_in_error().await?;
-                    Some(Event { id, calendar_events, timezone })
+                    let rtww_setup_path = format!("/usr/local/share/fidera/games/werewolf/rtww/{id}/setup.json");
+                    let rtww_data = if Command::new("ssh").arg("gefolge.org").arg("test").arg("-f:").arg(&rtww_setup_path).status().await?.success() {
+                        Some(serde_json::from_slice(&Command::new("ssh").arg("gefolge.org").arg("cat").arg(rtww_setup_path).output().await?.stdout)?)
+                    } else {
+                        None
+                    };
+                    Some(Event { id, calendar_events, rtww_data, timezone })
                 }
                 ServerMessageV2::LatestSilVersion(version) => {
                     update_check(states_tx.clone(), allow_self_update, version).await?; //TODO run in background
@@ -301,13 +401,21 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                         .send().await?
                         .detailed_error_for_status().await?
                         .json_with_text_in_error().await?;
-                    current_event = Some(Event { id, calendar_events, timezone });
+                    current_event = Some(Event {
+                        rtww_data: None,
+                        id, calendar_events, timezone,
+                    });
                 }
                 ServerMessageV2::LatestSilVersion(version) => update_check(states_tx.clone(), allow_self_update, version).await?, //TODO run in background
                 ServerMessageV2::MarkdownPreview(_) => return Err(Error::UnexpectedMessage),
             },
             _ = interval.tick() => {
-                let mut available_modes = all::<Mode>().filter_map(|mode| Some((mode, mode.state(current_event.as_ref())?))).collect::<Vec<_>>();
+                let mut available_modes = Vec::default();
+                for mode in all::<Mode>() {
+                    if let Some(state) = mode.state(http_client, &config.api_key, current_event.as_ref()).await? {
+                        available_modes.push((mode, state));
+                    }
+                }
                 let max_priority = available_modes.iter().map(|(_, (priority, _))| *priority).max().unwrap_or(Priority::Fallback);
                 available_modes.retain(|(_, (iter_priority, _))| *iter_priority == max_priority);
                 if available_modes.iter().any(|(mode, _)| !seen_modes.contains(mode)) {
