@@ -99,7 +99,7 @@ struct Event {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CalEvent {
-    pub(crate) programmpunkt: String,
+    pub(crate) programmpunkt: Option<String>,
     pub(crate) start: MaybeAwareDateTime,
     pub(crate) end: MaybeAwareDateTime,
     pub(crate) text: String,
@@ -175,7 +175,7 @@ impl Mode {
                 let Some(rtww_data) = &rtww_data else { return Ok(None) };
                 let now = Utc::now().with_timezone(timezone);
                 let Some(_) = calendar_events.iter().find(|cal_event|
-                    cal_event.programmpunkt == "rtww"
+                    cal_event.programmpunkt.as_ref().is_some_and(|programmpunkt| programmpunkt == "rtww")
                     && cal_event.start.to_maybe_local(Some(*timezone)).is_ok_and(|start| match start {
                         MaybeLocalDateTime::Nonlocal(_) => false,
                         MaybeLocalDateTime::Local(start) => start <= now,
