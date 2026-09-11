@@ -401,6 +401,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                 ServerMessageV2::NoEvent => current_event = None,
                 ServerMessageV2::CurrentEvent { id, timezone } => {
                     let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{id}/overview.json"))
+                        .basic_auth("api", Some(&config.api_key))
                         .send().await?
                         .detailed_error_for_status().await?
                         .json_with_text_in_error().await?;
@@ -435,6 +436,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
             }
             _ = legacy_update_interval.tick() => if let Some(current_event) = &mut current_event {
                 let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{}/overview.json", current_event.id))
+                    .basic_auth("api", Some(&config.api_key))
                     .send().await?
                     .detailed_error_for_status().await?
                     .json_with_text_in_error().await?;
