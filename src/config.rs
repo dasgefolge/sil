@@ -20,6 +20,7 @@ pub(crate) enum Error {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Config {
     pub(crate) api_key: String,
+    #[cfg(feature = "nixos")] pub(crate) nixos_auth: String,
 }
 
 impl Config {

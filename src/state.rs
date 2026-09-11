@@ -298,7 +298,7 @@ async fn load_images_inner(http_client: &reqwest::Client, states_tx: EventLoopPr
     Ok(())
 }
 
-async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: bool, version: Version) -> Result<(), Error> {
+async fn update_check(#[cfg_attr(not(feature = "nixos"), allow(unused))] config: &Config, states_tx: EventLoopProxy<UserEvent>, allow_self_update: bool, version: Version) -> Result<(), Error> {
     if version <= env!("CARGO_PKG_VERSION").parse().expect("failed to parse package version") {
         Ok(())
     } else {
@@ -311,7 +311,8 @@ async fn update_check(states_tx: EventLoopProxy<UserEvent>, allow_self_update: b
                     .arg("--recreate-lock-file")
                     .arg("--refresh")
                     .arg("--no-write-lock-file")
-                    .arg("--flake=git+ssh://fenhl@fenhl.net/opt/git/localhost/dev/dev.git")
+                    .arg("--show-trace")
+                    .arg("--flake").arg(format!("https://start.fenhl.net/nixos.tar.gz?auth={}", config.nixos_auth))
                     .check("nixos-rebuild").await?;
             }
             #[cfg(not(feature = "nixos"))] {
@@ -378,7 +379,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                     Some(Event { id, calendar_events, rtww_data, timezone })
                 }
                 ServerMessageV2::LatestSilVersion(version) => {
-                    update_check(states_tx.clone(), allow_self_update, version).await?; //TODO run in background
+                    update_check(&config, states_tx.clone(), allow_self_update, version).await?; //TODO run in background
                     continue
                 }
                 ServerMessageV2::MarkdownPreview(_) => return Err(Error::UnexpectedMessage),
@@ -406,7 +407,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                         id, calendar_events, timezone,
                     });
                 }
-                ServerMessageV2::LatestSilVersion(version) => update_check(states_tx.clone(), allow_self_update, version).await?, //TODO run in background
+                ServerMessageV2::LatestSilVersion(version) => update_check(&config, states_tx.clone(), allow_self_update, version).await?, //TODO run in background
                 ServerMessageV2::MarkdownPreview(_) => return Err(Error::UnexpectedMessage),
             },
             _ = interval.tick() => {
