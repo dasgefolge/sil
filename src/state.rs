@@ -389,8 +389,10 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
     };
     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "determining first mode" })))?;
     let mut seen_modes = HashSet::new();
-    let mut interval = interval(StdDuration::from_secs(10));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut mode_interval = interval(StdDuration::from_secs(10));
+    mode_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut legacy_update_interval = interval(StdDuration::from_mins(5));
+    legacy_update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         select! {
             res = stream.next() => match res.ok_or(Error::EndOfStream)?? {
@@ -410,7 +412,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                 ServerMessageV2::LatestSilVersion(version) => update_check(&config, states_tx.clone(), allow_self_update, version).await?, //TODO run in background
                 ServerMessageV2::MarkdownPreview(_) => return Err(Error::UnexpectedMessage),
             },
-            _ = interval.tick() => {
+            _ = mode_interval.tick() => {
                 let mut available_modes = Vec::default();
                 for mode in all::<Mode>() {
                     if let Some(state) = mode.state(http_client, &config.api_key, current_event.as_ref()).await? {
@@ -431,6 +433,13 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
                     tokio::task::block_in_place(|| states_tx.send_event(UserEvent::State(State::Logo { msg: "no modes available" })))?;
                 };
             }
+            _ = legacy_update_interval.tick() => if let Some(current_event) = &mut current_event {
+                let LegacyEventData { calendar_events } = http_client.get(format!("https://gefolge.org/api/event/{}/overview.json", current_event.id))
+                    .send().await?
+                    .detailed_error_for_status().await?
+                    .json_with_text_in_error().await?;
+                current_event.calendar_events = calendar_events;
+            },
         }
     }
 }
