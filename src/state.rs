@@ -361,7 +361,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
         sink.send(ClientMessageV2::CurrentEvent).await?;
         let current_event = loop {
             break match stream.next().await.ok_or(Error::EndOfStream)?? {
-                ServerMessageV2::Ping => continue, //TODO send pong
+                ServerMessageV2::Ping => continue,
                 ServerMessageV2::Error { debug, display } => return Err(Error::Server { debug, display }),
                 ServerMessageV2::NoEvent => None,
                 ServerMessageV2::CurrentEvent { id, timezone } => {
@@ -396,7 +396,7 @@ async fn maintain_inner(mut rng: impl Rng + Send, http_client: &reqwest::Client,
     loop {
         select! {
             res = stream.next() => match res.ok_or(Error::EndOfStream)?? {
-                ServerMessageV2::Ping => continue, //TODO send pong
+                ServerMessageV2::Ping => continue,
                 ServerMessageV2::Error { debug, display } => return Err(Error::Server { debug, display }),
                 ServerMessageV2::NoEvent => current_event = None,
                 ServerMessageV2::CurrentEvent { id, timezone } => {
